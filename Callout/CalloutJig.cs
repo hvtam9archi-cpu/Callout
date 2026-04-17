@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Runtime.InteropServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
@@ -8,133 +8,143 @@ using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
 namespace Callout.Jigs
 {
-	public class CalloutJig : DrawJig
-	{
-		public BlockReference JigRef { get; private set; }
-		public Point3d CurrentPosition { get; private set; }
-		public Matrix3d MathTransform { get; private set; }
+    public class CalloutJig : DrawJig
+    {
+        public BlockReference JigRef { get; private set; }
+        public Point3d CurrentPosition { get; private set; }
+        public Matrix3d MathTransform { get; private set; }
 
-		private readonly Point3d _basePoint;
-		private readonly Extents3d _origExtents;
+        private readonly Point3d _basePoint;
+        private readonly Extents3d _originalExtents;
 
-		public CalloutJig(BlockReference jigRef, Point3d basePoint, Extents3d origExt)
-		{
-			JigRef = jigRef;
-			_basePoint = basePoint;
-			_origExtents = origExt;
-			CurrentPosition = basePoint;
-		}
+        public CalloutJig(BlockReference jigRef, Point3d basePoint, Extents3d origExt)
+        {
+            JigRef = jigRef;
+            _basePoint = basePoint;
+            _originalExtents = origExt;
+            CurrentPosition = basePoint;
+        }
 
-		protected override SamplerStatus Sampler(JigPrompts prompts)
-		{
-			JigPromptPointOptions opt = new JigPromptPointOptions("\n/+/- đổi Tỷ lệ): ")
-			{
-				UserInputControls = UserInputControls.Accept3dCoordinates | UserInputControls.NullResponseAccepted | UserInputControls.GovernedByOrthoMode,
-				UseBasePoint = true,
-				BasePoint = _basePoint
-			};
+        protected override SamplerStatus Sampler(JigPrompts prompts)
+        {
+            JigPromptPointOptions options = new JigPromptPointOptions("\nThay đổi Tỷ lệ: ")
+            {
+                UserInputControls = UserInputControls.Accept3dCoordinates | UserInputControls.NullResponseAccepted | UserInputControls.GovernedByOrthoMode,
+                UseBasePoint = true,
+                BasePoint = _basePoint
+            };
 
-			PromptPointResult res = prompts.AcquirePoint(opt);
-			if (res.Status == PromptStatus.Cancel) return SamplerStatus.Cancel;
+            PromptPointResult result = prompts.AcquirePoint(options);
+            if (result.Status == PromptStatus.Cancel) return SamplerStatus.Cancel;
 
-			if (JigInputHandler.ScaleChanged || res.Value.DistanceTo(CurrentPosition) > 0.001)
-			{
-				CurrentPosition = res.Value;
-				JigInputHandler.ScaleChanged = false;
-				return SamplerStatus.OK;
-			}
+            if (JigInputHandler.ScaleChanged || result.Value.DistanceTo(CurrentPosition) > 0.001)
+            {
+                CurrentPosition = result.Value;
+                JigInputHandler.ScaleChanged = false;
+                return SamplerStatus.OK;
+            }
 
-			return SamplerStatus.NoChange;
-		}
+            return SamplerStatus.NoChange;
+        }
 
-		protected override bool WorldDraw(Autodesk.AutoCAD.GraphicsInterface.WorldDraw draw)
-		{
-			JigRef.Position = CurrentPosition;
-			JigRef.ScaleFactors = new Scale3d(JigInputHandler.CurrentScale);
+        protected override bool WorldDraw(Autodesk.AutoCAD.GraphicsInterface.WorldDraw draw)
+        {
+            JigRef.Position = CurrentPosition;
+            JigRef.ScaleFactors = new Scale3d(JigInputHandler.CurrentScale);
 
-			draw.Geometry.Draw(JigRef);
+            draw.Geometry.Draw(JigRef);
 
-			MathTransform = Matrix3d.Scaling(JigInputHandler.CurrentScale, CurrentPosition) * Matrix3d.Displacement(_basePoint.GetVectorTo(CurrentPosition));
+            MathTransform = Matrix3d.Scaling(JigInputHandler.CurrentScale, CurrentPosition) * Matrix3d.Displacement(_basePoint.GetVectorTo(CurrentPosition));
 
-			using (Polyline leader = CalloutGeometryService.CreateSmartLeader(_origExtents, MathTransform))
-			{
-				draw.Geometry.Draw(leader);
-			}
+            double viewSize = (double)AcadApp.GetSystemVariable("VIEWSIZE");
+            double visualDotSize = viewSize * 0.005;
 
-			double viewSize = (double)AcadApp.GetSystemVariable("VIEWSIZE");
-			using (DBText txt = new DBText())
-			{
-				txt.Position = CurrentPosition + new Vector3d(viewSize * 0.03, viewSize * 0.05, 0);
-				txt.Height = viewSize * 0.02;
-				txt.TextString = $"Ty le: {JigInputHandler.CurrentScale}x";
-				txt.ColorIndex = 2;
-				draw.Geometry.Draw(txt);
-			}
+            var leaderEntities = CalloutGeometryService.CreateSmartLeader(_originalExtents, MathTransform, visualDotSize);
+            foreach (var ent in leaderEntities)
+            {
+                draw.Geometry.Draw(ent);
+                ent.Dispose();
+            }
 
-			return true;
-		}
-	}
+            using (DBText contextText = new DBText())
+            {
+                contextText.Position = CurrentPosition + new Vector3d(viewSize * 0.03, viewSize * 0.05, 0);
+                contextText.Height = viewSize * 0.02;
+                contextText.TextString = $"Tỷ lệ: {JigInputHandler.CurrentScale}x";
+                contextText.ColorIndex = 2;
+                draw.Geometry.Draw(contextText);
+            }
 
-	public static class JigInputHandler
-	{
-		public static double CurrentScale = 1.0;
-		public static bool ScaleChanged = false;
+            return true;
+        }
+    }
 
-		[DllImport("user32.dll")]
-		private static extern bool SetCursorPos(int X, int Y);
+    public static class JigInputHandler
+    {
+        public static double CurrentScale = 1.0;
+        public static bool ScaleChanged = false;
 
-		[DllImport("user32.dll")]
-		[return: MarshalAs(UnmanagedType.Bool)]
-		private static extern bool GetCursorPos(out POINT lpPoint);
+        [DllImport("user32.dll")]
+        private static extern bool SetCursorPos(int X, int Y);
 
-		[StructLayout(LayoutKind.Sequential)]
-		public struct POINT { public int X; public int Y; }
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetCursorPos(out POINT lpPoint);
 
-		public static void Start()
-		{
-			CurrentScale = 1.0;
-			ScaleChanged = false;
-			AcadApp.PreTranslateMessage += OnPreTranslateMessage;
-		}
+        [StructLayout(LayoutKind.Sequential)]
+        public struct POINT { public int X; public int Y; }
 
-		public static void Stop()
-		{
-			AcadApp.PreTranslateMessage -= OnPreTranslateMessage;
-		}
+        public static void Start()
+        {
+            CurrentScale = 1.0;
+            ScaleChanged = false;
+            AcadApp.PreTranslateMessage += OnPreTranslateMessage;
+        }
 
-		private static void OnPreTranslateMessage(object sender, Autodesk.AutoCAD.ApplicationServices.PreTranslateMessageEventArgs e)
-		{
-			if (e.Message.message == 0x0100)
-			{
-				int vkCode = (int)e.Message.wParam;
-				bool handled = false;
+        public static void Stop()
+        {
+            AcadApp.PreTranslateMessage -= OnPreTranslateMessage;
+        }
 
-				if (vkCode == 38 || vkCode == 87 || vkCode == 107 || vkCode == 187)
-				{
-					CurrentScale += 1.0;
-					handled = true;
-				}
-				else if (vkCode == 40 || vkCode == 83 || vkCode == 109 || vkCode == 189)
-				{
-					if (CurrentScale > 1.0) CurrentScale -= 1.0;
-					handled = true;
-				}
+        private static void OnPreTranslateMessage(object sender, Autodesk.AutoCAD.ApplicationServices.PreTranslateMessageEventArgs e)
+        {
+            // NGUYÊN TẮC: Global Try Catch Catch để đảm bảo An toàn trên tầng Host
+            try
+            {
+                if (e.Message.message == 0x0100)
+                {
+                    int vkCode = (int)e.Message.wParam;
+                    bool handled = false;
 
-				if (handled)
-				{
-					ScaleChanged = true;
-					e.Handled = true;
+                    if (vkCode == 38 || vkCode == 87 || vkCode == 107 || vkCode == 187) // Up/W/+
+                    {
+                        CurrentScale += 1.0;
+                        handled = true;
+                    }
+                    else if (vkCode == 40 || vkCode == 83 || vkCode == 109 || vkCode == 189) // Down/S/-
+                    {
+                        if (CurrentScale > 1.0) CurrentScale -= 1.0;
+                        handled = true;
+                    }
 
-					try
-					{
-						// SỬA IDE0031: Rút gọn toán tử kiểm tra Null (?. thay vì if != null)
-						AcadApp.DocumentManager.MdiActiveDocument?.Editor.WriteMessage($"\n>> Tỷ lệ trích xuất hiện tại: {CurrentScale}x");
-					}
-					catch { }
+                    if (handled)
+                    {
+                        ScaleChanged = true;
+                        e.Handled = true;
 
-					if (GetCursorPos(out POINT p)) SetCursorPos(p.X + 1, p.Y);
-				}
-			}
-		}
-	}
+                        AcadApp.DocumentManager.MdiActiveDocument?.Editor.WriteMessage($"\n>> Tỷ lệ trích xuất hiện tại: {CurrentScale}x");
+
+                        if (GetCursorPos(out POINT point))
+                        {
+                            SetCursorPos(point.X + 1, point.Y);
+                        }
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                AcadApp.DocumentManager.MdiActiveDocument?.Editor.WriteMessage($"\n[ERROR PreTranslateMessage]: {ex.Message}");
+            }
+        }
+    }
 }
