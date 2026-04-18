@@ -17,8 +17,21 @@ namespace Callout.Commands
 {
     public class CalloutCommand
     {
+        private static readonly Dictionary<ObjectId, List<ObjectId>> _blockCalloutBubbles = new Dictionary<ObjectId, List<ObjectId>>();
+
         [CommandMethod("CT", CommandFlags.Modal)]
         public void CreateCallout()
+        {
+            ExecuteCallout(false);
+        }
+
+        [CommandMethod("CT1", CommandFlags.Modal)]
+        public void CreateCalloutFar()
+        {
+            ExecuteCallout(true);
+        }
+
+        private void ExecuteCallout(bool isFarCallout)
         {
             Document document = Application.DocumentManager.MdiActiveDocument;
             Database database = document.Database;
@@ -43,6 +56,10 @@ namespace Callout.Commands
                 ObjectId sourceBlockId = promptBlockResult.ObjectId;
                 ObjectId boundaryPolylineId = promptPolylineResult.ObjectId;
                 
+                int tempCounter = 1;
+                string viewNumberValue = "";
+                ObjectId _newBubbleId = ObjectId.Null;
+
                 ObjectId anonymousBlockId = ObjectId.Null;
                 ObjectId sourceLayerId = ObjectId.Null;
                 Extents3d originalExtents = new Extents3d();
@@ -56,6 +73,40 @@ namespace Callout.Commands
                     using (Polyline boundaryPolyline = transaction.GetObject(boundaryPolylineId, OpenMode.ForRead) as Polyline)
                     {
                         if (sourceBlock == null || boundaryPolyline == null) return;
+
+                        if (isFarCallout)
+                        {
+                            tempCounter = 1;
+                            if (_blockCalloutBubbles.TryGetValue(sourceBlockId, out List<ObjectId> bubbleList))
+                            {
+                                List<int> usedNumbers = new List<int>();
+                                List<ObjectId> validBubbles = new List<ObjectId>();
+                                foreach (ObjectId bId in bubbleList)
+                                {
+                                    if (bId.IsErased || !bId.IsValid || bId.IsNull) continue;
+                                    BlockReference bRef = transaction.GetObject(bId, OpenMode.ForRead, false, true) as BlockReference;
+                                    if (bRef != null && !bRef.IsErased)
+                                    {
+                                        validBubbles.Add(bId);
+                                        string vn = GetAttributeValue(transaction, bRef, "VIEWNUMBER");
+                                        if (!string.IsNullOrEmpty(vn) && vn.StartsWith("CT", System.StringComparison.OrdinalIgnoreCase)) 
+                                        {
+                                            if (int.TryParse(vn.Substring(2), out int num)) 
+                                            {
+                                                usedNumbers.Add(num);
+                                            }
+                                        }
+                                    }
+                                }
+                                _blockCalloutBubbles[sourceBlockId] = validBubbles;
+
+                                while (usedNumbers.Contains(tempCounter))
+                                {
+                                    tempCounter++;
+                                }
+                            }
+                            viewNumberValue = $"CT{tempCounter:D2}";
+                        }
 
                         sourceLayerId = boundaryPolyline.LayerId;
                         originalExtents = boundaryPolyline.GeometricExtents;
@@ -100,7 +151,7 @@ namespace Callout.Commands
                 
                 using (BlockReference jigReference = new BlockReference(basePoint, anonymousBlockId) { LayerId = sourceLayerId })
                 {
-                    var calloutJig = new CalloutJig(jigReference, basePoint, originalExtents);
+                    var calloutJig = new CalloutJig(jigReference, basePoint, originalExtents, isFarCallout);
                     
                     try
                     {
@@ -131,6 +182,12 @@ namespace Callout.Commands
                     Point3d finalPosition = calloutJig.CurrentPosition;
                     Matrix3d mathTransform = calloutJig.MathTransform;
 
+                    Point3d sourceBubblePos = basePoint;
+                    if (isFarCallout)
+                    {
+                        sourceBubblePos = new Point3d(originalExtents.MaxPoint.X + (12.0 * dimensionScale), originalExtents.MaxPoint.Y + (12.0 * dimensionScale), 0);
+                    }
+
                     // 4. TRANSACTION ĐỢT 2: Thêm Viewport Block + Thêm Dimensions (Thao tác DB rồi đóng ngay)
                     using (DocumentLock docLock = document.LockDocument())
                     using (Transaction transaction = database.TransactionManager.StartTransaction())
@@ -145,13 +202,68 @@ namespace Callout.Commands
                             currentSpace.AppendEntity(jigReference);
                             transaction.AddNewlyCreatedDBObject(jigReference, true);
 
-                            double dotDiameter = 2.0 * dimensionScale;
-                            var leaderEntities = CalloutGeometryService.CreateSmartLeader(originalExtents, mathTransform, dotDiameter);
-                            foreach (Entity ent in leaderEntities)
+                            if (!isFarCallout)
                             {
-                                ent.LayerId = sourceLayerId;
-                                currentSpace.AppendEntity(ent);
-                                transaction.AddNewlyCreatedDBObject(ent, true);
+                                double dotDiameter = 1.5 * dimensionScale;
+                                var leaderEntities = CalloutGeometryService.CreateSmartLeader(originalExtents, mathTransform, dotDiameter);
+                                foreach (Entity ent in leaderEntities)
+                                {
+                                    ent.LayerId = sourceLayerId;
+                                    currentSpace.AppendEntity(ent);
+                                    transaction.AddNewlyCreatedDBObject(ent, true);
+                                }
+                            }
+                            else
+                            {
+                                ObjectId detailBlockId = EnsureDetailCalloutBlock(database, transaction);
+                                if (!detailBlockId.IsNull)
+                                {
+                                    using (Polyline originalBoundaryPolyline = transaction.GetObject(boundaryPolylineId, OpenMode.ForRead) as Polyline)
+                                    {
+                                        Point3d closestPoint = originalBoundaryPolyline.GetClosestPointTo(sourceBubblePos, false);
+                                        
+                                        double bubbleRadius = 6.0 * dimensionScale;
+                                        Point3d leaderEnd = new Point3d(sourceBubblePos.X - bubbleRadius, sourceBubblePos.Y, 0);
+                                        double kneeX = Math.Max(leaderEnd.X - (4.0 * dimensionScale), closestPoint.X + (2.0 * dimensionScale));
+                                        Point3d leaderKnee = new Point3d(kneeX, sourceBubblePos.Y, 0);
+                                        
+                                        using (Polyline bubbleLeader = new Polyline())
+                                        {
+                                            bubbleLeader.SetDatabaseDefaults();
+                                            bubbleLeader.AddVertexAt(0, new Point2d(closestPoint.X, closestPoint.Y), 0, 0, 0);
+                                            bubbleLeader.AddVertexAt(1, new Point2d(leaderKnee.X, leaderKnee.Y), 0, 0, 0);
+                                            bubbleLeader.AddVertexAt(2, new Point2d(leaderEnd.X, leaderEnd.Y), 0, 0, 0);
+                                            bubbleLeader.LayerId = sourceLayerId;
+                                            currentSpace.AppendEntity(bubbleLeader);
+                                            transaction.AddNewlyCreatedDBObject(bubbleLeader, true);
+                                        }
+
+                                        using (Entity dot = CreateLeaderDot(closestPoint, 2.0 * dimensionScale))
+                                        {
+                                            dot.LayerId = sourceLayerId;
+                                            currentSpace.AppendEntity(dot);
+                                            transaction.AddNewlyCreatedDBObject(dot, true);
+                                        }
+                                    }
+
+                                    using (BlockReference sourceBubble = new BlockReference(sourceBubblePos, detailBlockId))
+                                    {
+                                        sourceBubble.ScaleFactors = new Scale3d(dimensionScale);
+                                        sourceBubble.LayerId = sourceLayerId;
+                                        currentSpace.AppendEntity(sourceBubble);
+                                        transaction.AddNewlyCreatedDBObject(sourceBubble, true);
+                                        
+                                        var dict = new Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase) {
+                                            { "VIEWNUMBER", viewNumberValue },
+                                            { "SHEETNUMBER", "" }
+                                        };
+                                        ApplyDictionaryAttributes(transaction, sourceBubble, dict);
+                                    }
+                                }
+                                else
+                                {
+                                    editor.WriteMessage("\n[Cảnh báo]: Không thể tạo Block '_DetailCallout - Metric'!");
+                                }
                             }
 
                             string styleName = $"TB_ABC_DIM 1-{dimensionScale:0.##}";
@@ -165,9 +277,81 @@ namespace Callout.Commands
                                     currentSpace, dimensionStyleId, dimensionScale, calloutScale,
                                     basePoint, finalPosition, backgroundLayerId, dimensionLayerId, transaction
                                 );
+
+                                if (isFarCallout)
+                                {
+                                    ObjectId detailBlockId = EnsureDetailCalloutBlock(database, transaction);
+                                    if (!detailBlockId.IsNull)
+                                    {
+                                        Extents3d finalExtents;
+                                        using (Polyline clonedBoundary = originalBoundaryPolyline.Clone() as Polyline)
+                                        {
+                                            clonedBoundary.TransformBy(mathTransform);
+                                            finalExtents = clonedBoundary.GeometricExtents;
+                                        }
+
+                                        double titleY = finalExtents.MinPoint.Y - (10.0 * dimensionScale);
+                                        
+                                        double textWidth = 28.0 * dimensionScale; // safe fallback width for "CHI TIẾT "
+                                        double gap = 3.5 * dimensionScale;
+                                        double bubbleRadius = 6.0 * dimensionScale;
+                                        double totalWidth = textWidth + gap + (2.0 * bubbleRadius);
+                                        double centerX = (finalExtents.MinPoint.X + finalExtents.MaxPoint.X) / 2.0;
+
+                                        double startX = centerX - (totalWidth / 2.0);
+                                        Point3d titleStartPoint = new Point3d(startX, titleY, 0);
+
+                                        using (DBText textTitle = new DBText())
+                                        {
+                                            textTitle.SetDatabaseDefaults();
+                                            textTitle.Position = titleStartPoint;
+                                            textTitle.HorizontalMode = TextHorizontalMode.TextLeft;
+                                            textTitle.VerticalMode = TextVerticalMode.TextVerticalMid;
+                                            textTitle.AlignmentPoint = titleStartPoint;
+                                            textTitle.Height = 4.0 * dimensionScale;
+                                            textTitle.TextString = "CHI TIẾT ";
+                                            textTitle.LayerId = sourceLayerId;
+                                            textTitle.TextStyleId = EnsureTextStyle(database, transaction, "Standard", "arial.ttf");
+                                            
+                                            // Get precise width if bounds available
+                                            currentSpace.AppendEntity(textTitle);
+                                            transaction.AddNewlyCreatedDBObject(textTitle, true);
+                                            
+                                            try {
+                                                if (textTitle.Bounds.HasValue) {
+                                                    textWidth = textTitle.Bounds.Value.MaxPoint.X - textTitle.Bounds.Value.MinPoint.X;
+                                                }
+                                            } catch { }
+                                        }
+
+                                        Point3d titleBubblePos = new Point3d(titleStartPoint.X + textWidth + gap + bubbleRadius, titleY, 0);
+
+                                        using (BlockReference titleBubble = new BlockReference(titleBubblePos, detailBlockId))
+                                        {
+                                            titleBubble.ScaleFactors = new Scale3d(dimensionScale);
+                                            titleBubble.LayerId = sourceLayerId;
+                                            currentSpace.AppendEntity(titleBubble);
+                                            transaction.AddNewlyCreatedDBObject(titleBubble, true);
+                                            
+                                            var dict = new Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase) {
+                                                { "VIEWNUMBER", viewNumberValue },
+                                                { "SHEETNUMBER", "" }
+                                            };
+                                            ApplyDictionaryAttributes(transaction, titleBubble, dict);
+                                            _newBubbleId = titleBubble.ObjectId;
+                                        }
+                                    }
+                                }
                             }
                         }
                         transaction.Commit();
+                    }
+
+                    if (isFarCallout && !_newBubbleId.IsNull)
+                    {
+                        if (!_blockCalloutBubbles.ContainsKey(sourceBlockId))
+                            _blockCalloutBubbles[sourceBlockId] = new List<ObjectId>();
+                        _blockCalloutBubbles[sourceBlockId].Add(_newBubbleId);
                     }
                 }
             }
@@ -612,6 +796,18 @@ namespace Callout.Commands
             }
         }
 
+        private ObjectId GetBlockIdByNameRobust(Database database, Transaction transaction, params string[] names)
+        {
+            using (BlockTable blockTable = (BlockTable)transaction.GetObject(database.BlockTableId, OpenMode.ForRead))
+            {
+                foreach (string name in names)
+                {
+                    if (blockTable.Has(name)) return blockTable[name];
+                }
+            }
+            return ObjectId.Null;
+        }
+
         private void ApplyXClip(Transaction transaction, BlockReference blockReference, Polyline polyline)
         {
             blockReference.CreateExtensionDictionary();
@@ -638,6 +834,131 @@ namespace Callout.Commands
                     }
                 }
             }
+        }
+
+        private ObjectId EnsureDetailCalloutBlock(Database database, Transaction transaction)
+        {
+            string blockName = "_DetailCallout - Metric";
+            using (BlockTable blockTable = (BlockTable)transaction.GetObject(database.BlockTableId, OpenMode.ForWrite))
+            {
+                if (blockTable.Has(blockName)) return blockTable[blockName];
+
+                using (BlockTableRecord btr = new BlockTableRecord())
+                {
+                    btr.Name = blockName;
+                    btr.Origin = Point3d.Origin;
+                    
+                    Circle c1 = new Circle(Point3d.Origin, Vector3d.ZAxis, 5.5);
+                    c1.SetDatabaseDefaults();
+                    btr.AppendEntity(c1);
+
+                    Circle c2 = new Circle(Point3d.Origin, Vector3d.ZAxis, 6.0);
+                    c2.SetDatabaseDefaults();
+                    btr.AppendEntity(c2);
+
+                    Line l1 = new Line(new Point3d(-6.0, 0, 0), new Point3d(6.0, 0, 0));
+                    l1.SetDatabaseDefaults();
+                    btr.AppendEntity(l1);
+
+                    AttributeDefinition ad1 = new AttributeDefinition();
+                    ad1.SetDatabaseDefaults();
+                    ad1.HorizontalMode = TextHorizontalMode.TextCenter;
+                    ad1.VerticalMode = TextVerticalMode.TextVerticalMid;
+                    ad1.AlignmentPoint = new Point3d(0, 1.5, 0);
+                    ad1.Position = new Point3d(0, 1.5, 0);
+                    ad1.Height = 2.5;
+                    ad1.Tag = "VIEWNUMBER";
+                    ad1.TextString = "VIEWNUMBER";
+                    ad1.Prompt = "Enter view number";
+                    btr.AppendEntity(ad1);
+
+                    AttributeDefinition ad2 = new AttributeDefinition();
+                    ad2.SetDatabaseDefaults();
+                    ad2.HorizontalMode = TextHorizontalMode.TextCenter;
+                    ad2.VerticalMode = TextVerticalMode.TextVerticalMid;
+                    ad2.AlignmentPoint = new Point3d(0, -2.0, 0);
+                    ad2.Position = new Point3d(0, -2.0, 0);
+                    ad2.Height = 2.0;
+                    ad2.Tag = "SHEETNUMBER";
+                    ad2.TextString = "SHEETNUMBER";
+                    ad2.Prompt = "Enter sheet number";
+                    btr.AppendEntity(ad2);
+
+                    blockTable.Add(btr);
+                    transaction.AddNewlyCreatedDBObject(btr, true);
+                    return btr.ObjectId;
+                }
+            }
+        }
+
+        private void ApplyDictionaryAttributes(Transaction transaction, BlockReference blockRef, Dictionary<string, string> attributeValues)
+        {
+            BlockTableRecord blockDef = (BlockTableRecord)transaction.GetObject(blockRef.BlockTableRecord, OpenMode.ForRead);
+            if (!blockDef.HasAttributeDefinitions) return;
+
+            HashSet<string> existingTags = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+            foreach (ObjectId attId in blockRef.AttributeCollection)
+            {
+                AttributeReference existingAtt = transaction.GetObject(attId, OpenMode.ForWrite) as AttributeReference;
+                if (existingAtt != null)
+                {
+                    existingTags.Add(existingAtt.Tag);
+                    if (attributeValues.TryGetValue(existingAtt.Tag, out string newVal))
+                    {
+                        existingAtt.TextString = newVal;
+                    }
+                }
+            }
+
+            foreach (ObjectId id in blockDef)
+            {
+                var dbObj = transaction.GetObject(id, OpenMode.ForRead);
+                if (dbObj is AttributeDefinition attDef && !attDef.Constant)
+                {
+                    if (existingTags.Contains(attDef.Tag)) continue;
+
+                    using (AttributeReference attRef = new AttributeReference())
+                    {
+                        attRef.SetAttributeFromBlock(attDef, blockRef.BlockTransform);
+                        attRef.Position = attDef.Position.TransformBy(blockRef.BlockTransform);
+                        
+                        if (attributeValues.TryGetValue(attDef.Tag, out string tagValue))
+                        {
+                            attRef.TextString = tagValue;
+                        }
+                        
+                        blockRef.AttributeCollection.AppendAttribute(attRef);
+                        transaction.AddNewlyCreatedDBObject(attRef, true);
+                    }
+                }
+            }
+        }
+
+        private Entity CreateLeaderDot(Point3d center, double diameter)
+        {
+            Polyline dot = new Polyline();
+            dot.SetDatabaseDefaults();
+            double radius = diameter / 2.0;
+
+            dot.AddVertexAt(0, new Point2d(center.X - radius / 2.0, center.Y), 1.0, diameter, diameter);
+            dot.AddVertexAt(1, new Point2d(center.X + radius / 2.0, center.Y), 1.0, diameter, diameter);
+            dot.Closed = true;
+
+            return dot;
+        }
+
+        private string GetAttributeValue(Transaction tr, BlockReference blockRef, string tag)
+        {
+            foreach (ObjectId attId in blockRef.AttributeCollection)
+            {
+                if (attId.IsErased) continue;
+                AttributeReference attRef = tr.GetObject(attId, OpenMode.ForRead, false, true) as AttributeReference;
+                if (attRef != null && attRef.Tag.Equals(tag, System.StringComparison.OrdinalIgnoreCase))
+                {
+                    return attRef.TextString;
+                }
+            }
+            return null;
         }
     }
 }

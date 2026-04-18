@@ -16,13 +16,15 @@ namespace Callout.Jigs
 
         private readonly Point3d _basePoint;
         private readonly Extents3d _originalExtents;
+        private readonly bool _isFarCallout;
 
-        public CalloutJig(BlockReference jigRef, Point3d basePoint, Extents3d origExt)
+        public CalloutJig(BlockReference jigRef, Point3d basePoint, Extents3d origExt, bool isFarCallout = false)
         {
             JigRef = jigRef;
             _basePoint = basePoint;
             _originalExtents = origExt;
             CurrentPosition = basePoint;
+            _isFarCallout = isFarCallout;
         }
 
         protected override SamplerStatus Sampler(JigPrompts prompts)
@@ -59,11 +61,14 @@ namespace Callout.Jigs
             double viewSize = (double)AcadApp.GetSystemVariable("VIEWSIZE");
             double visualDotSize = viewSize * 0.005;
 
-            var leaderEntities = CalloutGeometryService.CreateSmartLeader(_originalExtents, MathTransform, visualDotSize);
-            foreach (var ent in leaderEntities)
+            if (!_isFarCallout)
             {
-                draw.Geometry.Draw(ent);
-                ent.Dispose();
+                var leaderEntities = CalloutGeometryService.CreateSmartLeader(_originalExtents, MathTransform, visualDotSize);
+                foreach (var ent in leaderEntities)
+                {
+                    draw.Geometry.Draw(ent);
+                    ent.Dispose();
+                }
             }
 
             using (DBText contextText = new DBText())
