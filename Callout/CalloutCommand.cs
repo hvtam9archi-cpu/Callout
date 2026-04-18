@@ -478,6 +478,30 @@ namespace Callout.Commands
                 var distinctX = validPoints.Select(p => Math.Round(p.X, 2)).Distinct().OrderBy(x => x).ToList();
                 var distinctY = validPoints.Select(p => Math.Round(p.Y, 2)).Distinct().OrderBy(y => y).ToList();
 
+                double minDimDist = 5.0 * dimensionScale;
+
+                List<double> filteredX = new List<double>();
+                if (distinctX.Count > 0)
+                {
+                    filteredX.Add(distinctX.First());
+                    for (int i = 1; i < distinctX.Count; i++)
+                    {
+                        if (distinctX[i] - filteredX.Last() >= minDimDist) filteredX.Add(distinctX[i]);
+                    }
+                }
+                distinctX = filteredX;
+
+                List<double> filteredY = new List<double>();
+                if (distinctY.Count > 0)
+                {
+                    filteredY.Add(distinctY.First());
+                    for (int i = 1; i < distinctY.Count; i++)
+                    {
+                        if (distinctY[i] - filteredY.Last() >= minDimDist) filteredY.Add(distinctY[i]);
+                    }
+                }
+                distinctY = filteredY;
+
                 if (distinctX.Count > 1)
                 {
                     foreach (double xValue in distinctX)
@@ -860,16 +884,19 @@ namespace Callout.Commands
                     l1.SetDatabaseDefaults();
                     btr.AppendEntity(l1);
 
+                    ObjectId abcVerdanaStyleId = EnsureTextStyle(database, transaction, "ABC_Verdana", "verdana.ttf");
+
                     AttributeDefinition ad1 = new AttributeDefinition();
                     ad1.SetDatabaseDefaults();
                     ad1.HorizontalMode = TextHorizontalMode.TextCenter;
-                    ad1.VerticalMode = TextVerticalMode.TextVerticalMid;
+                    ad1.VerticalMode = TextVerticalMode.TextBase;
                     ad1.AlignmentPoint = new Point3d(0, 1.5, 0);
                     ad1.Position = new Point3d(0, 1.5, 0);
                     ad1.Height = 2.5;
                     ad1.Tag = "VIEWNUMBER";
                     ad1.TextString = "VIEWNUMBER";
                     ad1.Prompt = "Enter view number";
+                    ad1.TextStyleId = abcVerdanaStyleId;
                     btr.AppendEntity(ad1);
 
                     AttributeDefinition ad2 = new AttributeDefinition();
@@ -882,6 +909,7 @@ namespace Callout.Commands
                     ad2.Tag = "SHEETNUMBER";
                     ad2.TextString = "SHEETNUMBER";
                     ad2.Prompt = "Enter sheet number";
+                    ad2.TextStyleId = abcVerdanaStyleId;
                     btr.AppendEntity(ad2);
 
                     blockTable.Add(btr);
