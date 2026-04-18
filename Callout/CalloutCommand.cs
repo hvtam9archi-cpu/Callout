@@ -272,7 +272,7 @@ namespace Callout.Commands
                             using (BlockReference originalSourceBlock = transaction.GetObject(sourceBlockId, OpenMode.ForRead) as BlockReference)
                             using (Polyline originalBoundaryPolyline = transaction.GetObject(boundaryPolylineId, OpenMode.ForRead) as Polyline)
                             {
-                                CreateAutoDimensionGeometry(
+                                double dimCollisionOffset = CreateAutoDimensionGeometry(
                                     originalSourceBlock, originalBoundaryPolyline, mathTransform,
                                     currentSpace, dimensionStyleId, dimensionScale, calloutScale,
                                     basePoint, finalPosition, backgroundLayerId, dimensionLayerId, transaction
@@ -290,7 +290,7 @@ namespace Callout.Commands
                                             finalExtents = clonedBoundary.GeometricExtents;
                                         }
 
-                                        double titleY = finalExtents.MinPoint.Y - (10.0 * dimensionScale);
+                                        double titleY = finalExtents.MinPoint.Y - (10.0 * dimensionScale) - dimCollisionOffset;
                                         
                                         double textWidth = 28.0 * dimensionScale; // safe fallback width for "CHI TIẾT "
                                         double gap = 3.5 * dimensionScale;
@@ -424,11 +424,12 @@ namespace Callout.Commands
             }
         }
 
-        private void CreateAutoDimensionGeometry(BlockReference sourceBlock, Polyline boundaryPolyline, Matrix3d finalTransform, BlockTableRecord currentSpace, ObjectId dimensionStyleId, double dimensionScale, double calloutScale, Point3d originalCenter, Point3d newCenter, ObjectId backgroundLayerId, ObjectId dimensionLayerId, Transaction transaction)
+        private double CreateAutoDimensionGeometry(BlockReference sourceBlock, Polyline boundaryPolyline, Matrix3d finalTransform, BlockTableRecord currentSpace, ObjectId dimensionStyleId, double dimensionScale, double calloutScale, Point3d originalCenter, Point3d newCenter, ObjectId backgroundLayerId, ObjectId dimensionLayerId, Transaction transaction)
         {
             List<Point3d> validPoints = new List<Point3d>();
             List<Arc> validArcs = new List<Arc>();
             ObjectIdCollection backgroundObjectIds = new ObjectIdCollection();
+            double extraBottomOffset = 0.0;
 
             try
             {
@@ -473,7 +474,7 @@ namespace Callout.Commands
                     }
                 }
 
-                if (validPoints.Count == 0) return;
+                if (validPoints.Count == 0) return extraBottomOffset;
 
                 var distinctX = validPoints.Select(p => Math.Round(p.X, 2)).Distinct().OrderBy(x => x).ToList();
                 var distinctY = validPoints.Select(p => Math.Round(p.Y, 2)).Distinct().OrderBy(y => y).ToList();
@@ -501,6 +502,12 @@ namespace Callout.Commands
                     }
                 }
                 distinctY = filteredY;
+
+                if (!isPlaceTop)
+                {
+                    if (distinctX.Count > 2) extraBottomOffset = secondLayerOffset + (4.0 * dimensionScale);
+                    else if (distinctX.Count > 1) extraBottomOffset = firstLayerOffset + (4.0 * dimensionScale);
+                }
 
                 if (distinctX.Count > 1)
                 {
@@ -623,6 +630,8 @@ namespace Callout.Commands
                     if (arc != null && !arc.IsDisposed) arc.Dispose();
                 }
             }
+            
+            return extraBottomOffset;
         }
 
         // ==========================================
