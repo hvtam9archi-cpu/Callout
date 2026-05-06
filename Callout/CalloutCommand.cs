@@ -15,14 +15,72 @@ using Callout.Services;
 
 namespace Callout.Commands
 {
+    public class CalloutBubblePair
+    {
+        public ObjectId SourceBubbleId { get; set; }
+        public ObjectId TitleBubbleId { get; set; }
+    }
+
     public class CalloutCommand
     {
-        private static readonly Dictionary<ObjectId, List<ObjectId>> _blockCalloutBubbles = new Dictionary<ObjectId, List<ObjectId>>();
+        private static readonly Dictionary<Database, Dictionary<ObjectId, List<CalloutBubblePair>>> _blockCalloutBubbles = new Dictionary<Database, Dictionary<ObjectId, List<CalloutBubblePair>>>();
+
+        private static Callout.UI.CalloutManagerWindow _managerWindow = null;
+
+        public static Dictionary<ObjectId, List<CalloutBubblePair>> GetCalloutMappings(Database db)
+        {
+            if (db == null) return new Dictionary<ObjectId, List<CalloutBubblePair>>();
+            if (!_blockCalloutBubbles.ContainsKey(db))
+            {
+                _blockCalloutBubbles[db] = new Dictionary<ObjectId, List<CalloutBubblePair>>();
+            }
+            return _blockCalloutBubbles[db];
+        }
+
 
         [CommandMethod("CT", CommandFlags.Modal)]
         public void CreateCallout()
         {
             ExecuteCallout(false);
+        }
+
+
+
+        [CommandMethod("CT2", CommandFlags.Modal)]
+        public void ConfigureCallout()
+        {
+            try
+            {
+                var window = new Callout.UI.CalloutConfigWindow();
+                Application.ShowModalWindow(window);
+            }
+            catch (System.Exception ex)
+            {
+                Application.DocumentManager.MdiActiveDocument?.Editor.WriteMessage($"\n[ERROR CT2]: {ex.Message}");
+            }
+        }
+
+        [CommandMethod("CTS", CommandFlags.Modal)]
+        public void ShowCalloutStatus()
+        {
+            try
+            {
+                if (_managerWindow == null)
+                {
+                    _managerWindow = new Callout.UI.CalloutManagerWindow();
+                    _managerWindow.Closed += (s, e) => _managerWindow = null;
+                    Application.ShowModelessWindow(_managerWindow);
+                }
+                else
+                {
+                    _managerWindow.Activate();
+                    _managerWindow.Focus();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Application.DocumentManager.MdiActiveDocument?.Editor.WriteMessage($"\n[ERROR CTS]: {ex.Message}");
+            }
         }
 
         [CommandMethod("CT1", CommandFlags.Modal)]
@@ -47,9 +105,9 @@ namespace Callout.Commands
                 var promptBlockResult = editor.GetEntity(promptBlockOptions);
                 if (promptBlockResult.Status != PromptStatus.OK) return;
 
-                var promptPolylineOptions = new PromptEntityOptions("\nChọn Polyline làm khung trích: ");
-                promptPolylineOptions.SetRejectMessage("\nChỉ chọn Polyline!");
-                promptPolylineOptions.AddAllowedClass(typeof(Polyline), true);
+                var promptPolylineOptions = new PromptEntityOptions("\nChọn đối tượng khung trích (Polyline, Đường tròn...): ");
+                promptPolylineOptions.SetRejectMessage("\nChỉ chọn các đường khép kín (Polyline, Circle)!");
+                promptPolylineOptions.AddAllowedClass(typeof(Curve), false);
                 var promptPolylineResult = editor.GetEntity(promptPolylineOptions);
                 if (promptPolylineResult.Status != PromptStatus.OK) return;
 
@@ -58,9 +116,10 @@ namespace Callout.Commands
                 
                 int tempCounter = 1;
                 string viewNumberValue = "";
-                ObjectId _newBubbleId = ObjectId.Null;
+                ObjectId _newTitleBubbleId = ObjectId.Null;
+                ObjectId _newSourceBubbleId = ObjectId.Null;
 
-                ObjectId anonymousBlockId = ObjectId.Null;
+                ObjectId detailContentBlockId = ObjectId.Null;
                 ObjectId sourceLayerId = ObjectId.Null;
                 Extents3d originalExtents = new Extents3d();
                 Point3d basePoint = Point3d.Origin;
@@ -70,35 +129,42 @@ namespace Callout.Commands
                 using (Transaction transaction = database.TransactionManager.StartTransaction())
                 {
                     using (BlockReference sourceBlock = transaction.GetObject(sourceBlockId, OpenMode.ForRead) as BlockReference)
-                    using (Polyline boundaryPolyline = transaction.GetObject(boundaryPolylineId, OpenMode.ForRead) as Polyline)
+                    using (Curve boundaryCurve = transaction.GetObject(boundaryPolylineId, OpenMode.ForRead) as Curve)
                     {
-                        if (sourceBlock == null || boundaryPolyline == null) return;
+                        if (sourceBlock == null || boundaryCurve == null) return;
+                        
+                        if (!boundaryCurve.Closed && !(boundaryCurve is Circle))
+                        {
+                            editor.WriteMessage("\nCảnh báo: Đối tượng ranh giới không khép kín. XClip có thể không như ý muốn.");
+                        }
 
                         if (isFarCallout)
                         {
                             tempCounter = 1;
-                            if (_blockCalloutBubbles.TryGetValue(sourceBlockId, out List<ObjectId> bubbleList))
+                            var mappings = GetCalloutMappings(database);
+                            if (mappings.TryGetValue(sourceBlockId, out List<CalloutBubblePair> bubbleList))
                             {
                                 List<int> usedNumbers = new List<int>();
-                                List<ObjectId> validBubbles = new List<ObjectId>();
-                                foreach (ObjectId bId in bubbleList)
+                                List<CalloutBubblePair> validBubbles = new List<CalloutBubblePair>();
+                                foreach (CalloutBubblePair pair in bubbleList)
                                 {
-                                    if (bId.IsErased || !bId.IsValid || bId.IsNull) continue;
-                                    BlockReference bRef = transaction.GetObject(bId, OpenMode.ForRead, false, true) as BlockReference;
+                                    if (pair.TitleBubbleId.IsErased || !pair.TitleBubbleId.IsValid || pair.TitleBubbleId.IsNull) continue;
+                                    BlockReference bRef = transaction.GetObject(pair.TitleBubbleId, OpenMode.ForRead, false, true) as BlockReference;
                                     if (bRef != null && !bRef.IsErased)
                                     {
-                                        validBubbles.Add(bId);
+                                        validBubbles.Add(pair);
                                         string vn = GetAttributeValue(transaction, bRef, "VIEWNUMBER");
                                         if (!string.IsNullOrEmpty(vn) && vn.StartsWith("CT", System.StringComparison.OrdinalIgnoreCase)) 
                                         {
                                             if (int.TryParse(vn.Substring(2), out int num)) 
+
                                             {
                                                 usedNumbers.Add(num);
                                             }
                                         }
                                     }
                                 }
-                                _blockCalloutBubbles[sourceBlockId] = validBubbles;
+                                mappings[sourceBlockId] = validBubbles;
 
                                 while (usedNumbers.Contains(tempCounter))
                                 {
@@ -108,8 +174,8 @@ namespace Callout.Commands
                             viewNumberValue = $"CT{tempCounter:D2}";
                         }
 
-                        sourceLayerId = boundaryPolyline.LayerId;
-                        originalExtents = boundaryPolyline.GeometricExtents;
+                        sourceLayerId = boundaryCurve.LayerId;
+                        originalExtents = boundaryCurve.GeometricExtents;
 
                         basePoint = new Point3d(
                             (originalExtents.MinPoint.X + originalExtents.MaxPoint.X) / 2.0,
@@ -117,28 +183,29 @@ namespace Callout.Commands
                             (originalExtents.MinPoint.Z + originalExtents.MaxPoint.Z) / 2.0
                         );
 
+                        string newBlockName = "CT_DETAIL_" + System.Guid.NewGuid().ToString("N").Substring(0, 10).ToUpper();
                         using (BlockTable blockTable = (BlockTable)transaction.GetObject(database.BlockTableId, OpenMode.ForWrite))
-                        using (BlockTableRecord anonymousBlockRecord = new BlockTableRecord { Name = "*U" })
+                        using (BlockTableRecord detailBlockRecord = new BlockTableRecord { Name = newBlockName })
                         {
-                            anonymousBlockId = blockTable.Add(anonymousBlockRecord);
-                            transaction.AddNewlyCreatedDBObject(anonymousBlockRecord, true);
+                            detailContentBlockId = blockTable.Add(detailBlockRecord);
+                            transaction.AddNewlyCreatedDBObject(detailBlockRecord, true);
 
                             using (BlockReference innerBlock = sourceBlock.Clone() as BlockReference)
-                            using (Polyline innerPolyline = boundaryPolyline.Clone() as Polyline)
+                            using (Curve innerCurve = boundaryCurve.Clone() as Curve)
                             {
-                                innerPolyline.LayerId = sourceLayerId;
+                                innerCurve.LayerId = sourceLayerId;
 
                                 Vector3d vectorToOrigin = basePoint.GetVectorTo(Point3d.Origin);
                                 innerBlock.TransformBy(Matrix3d.Displacement(vectorToOrigin));
-                                innerPolyline.TransformBy(Matrix3d.Displacement(vectorToOrigin));
+                                innerCurve.TransformBy(Matrix3d.Displacement(vectorToOrigin));
 
-                                anonymousBlockRecord.AppendEntity(innerBlock);
+                                detailBlockRecord.AppendEntity(innerBlock);
                                 transaction.AddNewlyCreatedDBObject(innerBlock, true);
                                 
-                                anonymousBlockRecord.AppendEntity(innerPolyline);
-                                transaction.AddNewlyCreatedDBObject(innerPolyline, true);
+                                detailBlockRecord.AppendEntity(innerCurve);
+                                transaction.AddNewlyCreatedDBObject(innerCurve, true);
 
-                                ApplyXClip(transaction, innerBlock, innerPolyline);
+                                ApplyXClip(transaction, innerBlock, innerCurve);
                             }
                         }
                     }
@@ -149,7 +216,7 @@ namespace Callout.Commands
                 PromptResult jigResult = null;
                 double calloutScale = 1.0;
                 
-                using (BlockReference jigReference = new BlockReference(basePoint, anonymousBlockId) { LayerId = sourceLayerId })
+                using (BlockReference jigReference = new BlockReference(basePoint, detailContentBlockId) { LayerId = sourceLayerId })
                 {
                     var calloutJig = new CalloutJig(jigReference, basePoint, originalExtents, isFarCallout);
                     
@@ -218,9 +285,9 @@ namespace Callout.Commands
                                 ObjectId detailBlockId = EnsureDetailCalloutBlock(database, transaction);
                                 if (!detailBlockId.IsNull)
                                 {
-                                    using (Polyline originalBoundaryPolyline = transaction.GetObject(boundaryPolylineId, OpenMode.ForRead) as Polyline)
+                                    using (Curve originalBoundaryCurve = transaction.GetObject(boundaryPolylineId, OpenMode.ForRead) as Curve)
                                     {
-                                        Point3d closestPoint = originalBoundaryPolyline.GetClosestPointTo(sourceBubblePos, false);
+                                        Point3d closestPoint = originalBoundaryCurve.GetClosestPointTo(sourceBubblePos, false);
                                         
                                         double bubbleRadius = 6.0 * dimensionScale;
                                         Point3d leaderEnd = new Point3d(sourceBubblePos.X - bubbleRadius, sourceBubblePos.Y, 0);
@@ -252,6 +319,7 @@ namespace Callout.Commands
                                         sourceBubble.LayerId = sourceLayerId;
                                         currentSpace.AppendEntity(sourceBubble);
                                         transaction.AddNewlyCreatedDBObject(sourceBubble, true);
+                                        _newSourceBubbleId = sourceBubble.ObjectId;
                                         
                                         var dict = new Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase) {
                                             { "VIEWNUMBER", viewNumberValue },
@@ -270,10 +338,10 @@ namespace Callout.Commands
                             ObjectId dimensionStyleId = EnsureCalloutDimensionStyle(database, transaction, dimensionScale, styleName);
 
                             using (BlockReference originalSourceBlock = transaction.GetObject(sourceBlockId, OpenMode.ForRead) as BlockReference)
-                            using (Polyline originalBoundaryPolyline = transaction.GetObject(boundaryPolylineId, OpenMode.ForRead) as Polyline)
+                            using (Curve originalBoundaryCurve = transaction.GetObject(boundaryPolylineId, OpenMode.ForRead) as Curve)
                             {
                                 double dimCollisionOffset = CreateAutoDimensionGeometry(
-                                    originalSourceBlock, originalBoundaryPolyline, mathTransform,
+                                    originalSourceBlock, originalBoundaryCurve, mathTransform,
                                     currentSpace, dimensionStyleId, dimensionScale, calloutScale,
                                     basePoint, finalPosition, backgroundLayerId, dimensionLayerId, transaction
                                 );
@@ -284,7 +352,7 @@ namespace Callout.Commands
                                     if (!detailBlockId.IsNull)
                                     {
                                         Extents3d finalExtents;
-                                        using (Polyline clonedBoundary = originalBoundaryPolyline.Clone() as Polyline)
+                                        using (Curve clonedBoundary = originalBoundaryCurve.Clone() as Curve)
                                         {
                                             clonedBoundary.TransformBy(mathTransform);
                                             finalExtents = clonedBoundary.GeometricExtents;
@@ -338,7 +406,7 @@ namespace Callout.Commands
                                                 { "SHEETNUMBER", "" }
                                             };
                                             ApplyDictionaryAttributes(transaction, titleBubble, dict);
-                                            _newBubbleId = titleBubble.ObjectId;
+                                            _newTitleBubbleId = titleBubble.ObjectId;
                                         }
                                     }
                                 }
@@ -347,11 +415,12 @@ namespace Callout.Commands
                         transaction.Commit();
                     }
 
-                    if (isFarCallout && !_newBubbleId.IsNull)
+                    if (isFarCallout && !_newTitleBubbleId.IsNull && !_newSourceBubbleId.IsNull)
                     {
-                        if (!_blockCalloutBubbles.ContainsKey(sourceBlockId))
-                            _blockCalloutBubbles[sourceBlockId] = new List<ObjectId>();
-                        _blockCalloutBubbles[sourceBlockId].Add(_newBubbleId);
+                        var mappings = GetCalloutMappings(database);
+                        if (!mappings.ContainsKey(sourceBlockId))
+                            mappings[sourceBlockId] = new List<CalloutBubblePair>();
+                        mappings[sourceBlockId].Add(new CalloutBubblePair { SourceBubbleId = _newSourceBubbleId, TitleBubbleId = _newTitleBubbleId });
                     }
                 }
             }
@@ -424,7 +493,7 @@ namespace Callout.Commands
             }
         }
 
-        private double CreateAutoDimensionGeometry(BlockReference sourceBlock, Polyline boundaryPolyline, Matrix3d finalTransform, BlockTableRecord currentSpace, ObjectId dimensionStyleId, double dimensionScale, double calloutScale, Point3d originalCenter, Point3d newCenter, ObjectId backgroundLayerId, ObjectId dimensionLayerId, Transaction transaction)
+        private double CreateAutoDimensionGeometry(BlockReference sourceBlock, Curve boundaryCurve, Matrix3d finalTransform, BlockTableRecord currentSpace, ObjectId dimensionStyleId, double dimensionScale, double calloutScale, Point3d originalCenter, Point3d newCenter, ObjectId backgroundLayerId, ObjectId dimensionLayerId, Transaction transaction)
         {
             List<Point3d> validPoints = new List<Point3d>();
             List<Arc> validArcs = new List<Arc>();
@@ -433,11 +502,11 @@ namespace Callout.Commands
 
             try
             {
-                Extents3d clipBox = boundaryPolyline.GeometricExtents;
+                Extents3d clipBox = boundaryCurve.GeometricExtents;
                 ExtractGeometryRecursive(sourceBlock.BlockTableRecord, sourceBlock.BlockTransform, clipBox, finalTransform, validPoints, validArcs, transaction);
 
                 Extents3d finalBoundaryExtents;
-                using (Polyline clonedBoundary = boundaryPolyline.Clone() as Polyline)
+                using (Curve clonedBoundary = boundaryCurve.Clone() as Curve)
                 {
                     clonedBoundary.TransformBy(finalTransform);
                     finalBoundaryExtents = clonedBoundary.GeometricExtents;
@@ -841,7 +910,7 @@ namespace Callout.Commands
             return ObjectId.Null;
         }
 
-        private void ApplyXClip(Transaction transaction, BlockReference blockReference, Polyline polyline)
+        private void ApplyXClip(Transaction transaction, BlockReference blockReference, Curve boundaryCurve)
         {
             blockReference.CreateExtensionDictionary();
             using (DBDictionary extensionDictionary = (DBDictionary)transaction.GetObject(blockReference.ExtensionDictionary, OpenMode.ForWrite))
@@ -853,10 +922,31 @@ namespace Callout.Commands
 
                     Matrix3d worldToBlockMatrix = blockReference.BlockTransform.Inverse();
                     Point2dCollection points = new Point2dCollection();
-                    for (int i = 0; i < polyline.NumberOfVertices; i++)
+                    
+                    if (boundaryCurve is Polyline poly && !poly.HasBulges)
                     {
-                        Point3d pointInBlock = polyline.GetPoint3dAt(i).TransformBy(worldToBlockMatrix);
-                        points.Add(new Point2d(pointInBlock.X, pointInBlock.Y));
+                        for (int i = 0; i < poly.NumberOfVertices; i++)
+                        {
+                            Point3d pointInBlock = poly.GetPoint3dAt(i).TransformBy(worldToBlockMatrix);
+                            points.Add(new Point2d(pointInBlock.X, pointInBlock.Y));
+                        }
+                    }
+                    else
+                    {
+                        double startParam = boundaryCurve.StartParam;
+                        double endParam = boundaryCurve.EndParam;
+                        int numSegments = 72; // Create a smooth 72-segment polygon approximation
+                        for (int i = 0; i < numSegments; i++)
+                        {
+                            double t = (double)i / numSegments;
+                            double param = startParam + (endParam - startParam) * t;
+                            Point3d pt = boundaryCurve.GetPointAtParameter(param).TransformBy(worldToBlockMatrix);
+                            points.Add(new Point2d(pt.X, pt.Y));
+                        }
+                        
+                        // Close the loop explicitly just in case for the filter definition
+                        Point3d firstPt = boundaryCurve.GetPointAtParameter(startParam).TransformBy(worldToBlockMatrix);
+                        points.Add(new Point2d(firstPt.X, firstPt.Y));
                     }
 
                     SpatialFilterDefinition spatialFilterDefinition = new SpatialFilterDefinition(points, Vector3d.ZAxis, 0.0, 0.0, 0.0, true);
