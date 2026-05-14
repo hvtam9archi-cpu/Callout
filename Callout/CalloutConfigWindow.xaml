@@ -1,0 +1,70 @@
+<Window x:Class="Callout.UI.CalloutConfigWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Thiết lập Khung Bản Vẽ (CT2)" Width="420" Height="300"
+        WindowStartupLocation="CenterScreen" ResizeMode="NoResize"
+        WindowStyle="None" AllowsTransparency="True"
+        Background="Transparent" Foreground="#E8EAED" FontFamily="Segoe UI">
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="DarkTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <Border Background="#181A1F" CornerRadius="10" BorderBrush="#333640" BorderThickness="1">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="40"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="50"/>
+            </Grid.RowDefinitions>
+
+            <!-- ═══ TITLE BAR ═══ -->
+            <Border Grid.Row="0" Background="#12141A" CornerRadius="10,10,0,0">
+                <Grid Name="TitleBar" MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0">
+                        <Border Width="22" Height="22" CornerRadius="4" Background="#2563EB" Margin="0,0,8,0">
+                            <TextBlock Text="C" Foreground="White" FontWeight="Bold" FontSize="12" FontFamily="Segoe UI" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <TextBlock Text="Thiết lập Khung Bản Vẽ" FontSize="12" Foreground="#E8EAED" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                        <Button Name="BtnClose" Content="✕" Style="{StaticResource TitleBarCloseBtn}" Click="BtnClose_Click"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ═══ CONTENT (Row 1) ═══ -->
+            <Grid Grid.Row="1" Margin="14,8,14,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <TextBlock Text="Block Khung" FontSize="12" FontWeight="Bold" Foreground="#2563EB" Grid.Row="0" Margin="0,0,0,6"/>
+                <Grid Grid.Row="1" Margin="0,0,0,16">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox Name="TxtBlockName" IsReadOnly="True" Height="30" VerticalContentAlignment="Center"/>
+                    <Button Name="BtnSelectBlock" Content="Chọn Block" Width="100" Height="30" Grid.Column="1" Margin="8,0,0,0" Style="{StaticResource DarkButton}" Click="BtnSelectBlock_Click"/>
+                </Grid>
+                <TextBlock Text="Attribute làm Sheet Number" FontSize="12" FontWeight="Bold" Foreground="#2563EB" Grid.Row="2" Margin="0,0,0,6"/>
+                <ComboBox Name="CbxAttributes" Height="30" Grid.Row="3"/>
+            </Grid>
+
+            <!-- ═══ BOTTOM BAR (Row 2) ═══ -->
+            <Border Grid.Row="2" Background="#12141A" CornerRadius="0,0,10,10" Padding="14,8">
+                <Button Name="BtnSave" Content="Lưu Thiết Lập" Width="140" Height="34" HorizontalAlignment="Right" Click="BtnSave_Click"/>
+            </Border>
+        </Grid>
+    </Border>
+</Window>

@@ -9,6 +9,7 @@ using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.Geometry;
+using Callout.Services;
 using Application = Autodesk.AutoCAD.ApplicationServices.Core.Application;
 
 namespace Callout.UI
@@ -28,12 +29,8 @@ namespace Callout.UI
         }
     }
 
-    public class CalloutManagerWindow : Window
+    public partial class CalloutManagerWindow : Window
     {
-        private TreeView treeView;
-        private Button btnRefresh;
-        private Button btnGoTo;
-
         private readonly Color[] GroupColors = new Color[] {
             Color.FromRgb(231, 76, 60),  Color.FromRgb(46, 204, 113), Color.FromRgb(52, 152, 219),
             Color.FromRgb(155, 89, 182), Color.FromRgb(241, 196, 15), Color.FromRgb(230, 126, 34),
@@ -47,10 +44,15 @@ namespace Callout.UI
 
         public CalloutManagerWindow()
         {
-            InitializeUI();
+            InitializeComponent();
             RefreshData();
             Application.DocumentManager.DocumentActivated += DocumentManager_DocumentActivated;
             this.Closed += (s, e) => Application.DocumentManager.DocumentActivated -= DocumentManager_DocumentActivated;
+            
+            if (MainTreeView != null) 
+            {
+                MainTreeView.MouseDoubleClick += (s, e) => GoToSelectedNode();
+            }
         }
 
         private void DocumentManager_DocumentActivated(object sender, DocumentCollectionEventArgs e)
@@ -58,420 +60,54 @@ namespace Callout.UI
             this.Dispatcher.Invoke(() => RefreshData());
         }
 
-        private void InitializeUI()
+        private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
-            string xaml = @"
-<Window xmlns=""http://schemas.microsoft.com/winfx/2006/xaml/presentation""
-        xmlns:x=""http://schemas.microsoft.com/winfx/2006/xaml""
-        Title=""Quản lý Chi tiết Trích (CTS)"" Width=""600"" Height=""500""
-        WindowStartupLocation=""CenterScreen"" ResizeMode=""CanResizeWithGrip""
-        WindowStyle=""None"" AllowsTransparency=""True""
-        Background=""Transparent"" Foreground=""#E8EAED"" FontFamily=""Segoe UI"">
-    <Window.Resources>
-        <!-- ═══════════ GRADIENT BRUSHES ═══════════ -->
-        <LinearGradientBrush x:Key=""NodeBg"" StartPoint=""0,0"" EndPoint=""0,1"">
-            <GradientStop Color=""#2B2D32"" Offset=""0""/>
-            <GradientStop Color=""#232529"" Offset=""1""/>
-        </LinearGradientBrush>
-        <LinearGradientBrush x:Key=""NodeBgHover"" StartPoint=""0,0"" EndPoint=""0,1"">
-            <GradientStop Color=""#353840"" Offset=""0""/>
-            <GradientStop Color=""#2B2D34"" Offset=""1""/>
-        </LinearGradientBrush>
-        <LinearGradientBrush x:Key=""NodeBgSelected"" StartPoint=""0,0"" EndPoint=""1,0"">
-            <GradientStop Color=""#1A4A6E"" Offset=""0""/>
-            <GradientStop Color=""#0D3A5C"" Offset=""1""/>
-        </LinearGradientBrush>
-
-        <!-- ═══════════ TREEVIEWITEM TEMPLATE ═══════════ -->
-        <Style TargetType=""TreeViewItem"">
-            <Setter Property=""Background"" Value=""Transparent""/>
-            <Setter Property=""Padding"" Value=""0""/>
-            <Setter Property=""Margin"" Value=""0,2,0,2""/>
-            <Setter Property=""Template"">
-                <Setter.Value>
-                    <ControlTemplate TargetType=""TreeViewItem"">
-                        <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height=""Auto""/>
-                                <RowDefinition/>
-                            </Grid.RowDefinitions>
-
-                            <!-- ROW: Caret + Card -->
-                            <Grid Grid.Row=""0"">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width=""24""/>
-                                    <ColumnDefinition Width=""*""/>
-                                </Grid.ColumnDefinitions>
-
-                                <!-- Expand/Collapse Caret -->
-                                <ToggleButton x:Name=""Expander""
-                                    Style=""{DynamicResource CaretToggleStyle}""
-                                    IsChecked=""{Binding Path=IsExpanded, RelativeSource={RelativeSource TemplatedParent}}""
-                                    ClickMode=""Press"" VerticalAlignment=""Center""/>
-
-                                <!-- Node Card -->
-                                <Border Name=""Bd"" Grid.Column=""1""
-                                    Background=""{StaticResource NodeBg}""
-                                    BorderBrush=""#333640"" BorderThickness=""1""
-                                    CornerRadius=""8"" MinHeight=""42"" Margin=""0,1,0,1""
-                                    SnapsToDevicePixels=""True"">
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width=""14""/>
-                                            <ColumnDefinition Width=""*""/>
-                                        </Grid.ColumnDefinitions>
-
-                                        <!-- Gradient Indicator Bar (5px) -->
-                                        <Border Grid.Column=""0"" Background=""{Binding IndicatorColor}""
-                                            CornerRadius=""4,0,0,4"" Margin=""0"" Width=""5""/>
-
-                                        <!-- Text Content -->
-                                        <ContentPresenter x:Name=""PART_Header""
-                                            Grid.Column=""1"" ContentSource=""Header""
-                                            HorizontalAlignment=""Left"" VerticalAlignment=""Center""
-                                            Margin=""14,8,12,8""/>
-                                    </Grid>
-                                </Border>
-                            </Grid>
-
-                            <!-- CHILDREN CONTAINER -->
-                            <Grid Grid.Row=""1"" Margin=""12,0,0,0"">
-                                <!-- Vertical indent guide line -->
-                                <Border BorderThickness=""1,0,0,0""
-                                    BorderBrush=""#2A2D33""
-                                    Margin=""12,0,0,0""
-                                    HorizontalAlignment=""Left""/>
-                                <ItemsPresenter x:Name=""ItemsHost"" Margin=""24,0,0,0""/>
-                            </Grid>
-                        </Grid>
-
-                        <ControlTemplate.Triggers>
-                            <Trigger Property=""IsExpanded"" Value=""false"">
-                                <Setter TargetName=""ItemsHost"" Property=""Visibility"" Value=""Collapsed""/>
-                            </Trigger>
-                            <Trigger Property=""HasItems"" Value=""false"">
-                                <Setter TargetName=""Expander"" Property=""Visibility"" Value=""Hidden""/>
-                            </Trigger>
-                            <Trigger Property=""IsSelected"" Value=""true"">
-                                <Setter TargetName=""Bd"" Property=""Background"" Value=""{StaticResource NodeBgSelected}""/>
-                                <Setter TargetName=""Bd"" Property=""BorderBrush"" Value=""#1E6DA0""/>
-                            </Trigger>
-                            <MultiTrigger>
-                                <MultiTrigger.Conditions>
-                                    <Condition Property=""IsSelected"" Value=""false""/>
-                                    <Condition Property=""IsMouseOver"" Value=""true"" SourceName=""Bd""/>
-                                </MultiTrigger.Conditions>
-                                <Setter TargetName=""Bd"" Property=""Background"" Value=""{StaticResource NodeBgHover}""/>
-                                <Setter TargetName=""Bd"" Property=""BorderBrush"" Value=""#454850""/>
-                            </MultiTrigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <!-- ═══════════ CARET TOGGLE ═══════════ -->
-        <Style x:Key=""CaretToggleStyle"" TargetType=""ToggleButton"">
-            <Setter Property=""Focusable"" Value=""False""/>
-            <Setter Property=""Width"" Value=""22""/>
-            <Setter Property=""Height"" Value=""22""/>
-            <Setter Property=""Template"">
-                <Setter.Value>
-                    <ControlTemplate TargetType=""ToggleButton"">
-                        <Border Background=""Transparent"" CornerRadius=""4"" Width=""22"" Height=""22"">
-                            <Path x:Name=""Arrow""
-                                Fill=""#6B7280""
-                                Data=""M 5 3 L 5 11 L 11 7 Z""
-                                VerticalAlignment=""Center""
-                                HorizontalAlignment=""Center""/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property=""IsChecked"" Value=""True"">
-                                <Setter TargetName=""Arrow"" Property=""Data"" Value=""M 3 5 L 11 5 L 7 11 Z""/>
-                                <Setter TargetName=""Arrow"" Property=""Fill"" Value=""#9CA3AF""/>
-                            </Trigger>
-                            <Trigger Property=""IsMouseOver"" Value=""True"">
-                                <Setter TargetName=""Arrow"" Property=""Fill"" Value=""#60A5FA""/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <!-- ═══════════ BUTTON STYLE ═══════════ -->
-        <Style TargetType=""Button"">
-            <Setter Property=""Background"">
-                <Setter.Value>
-                    <LinearGradientBrush StartPoint=""0,0"" EndPoint=""0,1"">
-                        <GradientStop Color=""#2563EB"" Offset=""0""/>
-                        <GradientStop Color=""#1D4ED8"" Offset=""1""/>
-                    </LinearGradientBrush>
-                </Setter.Value>
-            </Setter>
-            <Setter Property=""Foreground"" Value=""#F0F4FF""/>
-            <Setter Property=""FontSize"" Value=""12""/>
-            <Setter Property=""FontWeight"" Value=""SemiBold""/>
-            <Setter Property=""BorderThickness"" Value=""0""/>
-            <Setter Property=""Cursor"" Value=""Hand""/>
-            <Setter Property=""Template"">
-                <Setter.Value>
-                    <ControlTemplate TargetType=""Button"">
-                        <Border Background=""{TemplateBinding Background}""
-                            BorderBrush=""#3B5FCC"" BorderThickness=""1""
-                            CornerRadius=""6"" Padding=""12,0"">
-                            <ContentPresenter HorizontalAlignment=""Center"" VerticalAlignment=""Center""/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property=""IsMouseOver"" Value=""True"">
-                                <Setter Property=""Background"">
-                                    <Setter.Value>
-                                        <LinearGradientBrush StartPoint=""0,0"" EndPoint=""0,1"">
-                                            <GradientStop Color=""#3B82F6"" Offset=""0""/>
-                                            <GradientStop Color=""#2563EB"" Offset=""1""/>
-                                        </LinearGradientBrush>
-                                    </Setter.Value>
-                                </Setter>
-                            </Trigger>
-                            <Trigger Property=""IsPressed"" Value=""True"">
-                                <Setter Property=""Background"">
-                                    <Setter.Value>
-                                        <LinearGradientBrush StartPoint=""0,0"" EndPoint=""0,1"">
-                                            <GradientStop Color=""#1D4ED8"" Offset=""0""/>
-                                            <GradientStop Color=""#1E3A8A"" Offset=""1""/>
-                                        </LinearGradientBrush>
-                                    </Setter.Value>
-                                </Setter>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <!-- ═══════════ SCROLLBAR ═══════════ -->
-        <Style TargetType=""ScrollBar"">
-            <Setter Property=""Background"" Value=""Transparent""/>
-            <Setter Property=""Width"" Value=""8""/>
-            <Setter Property=""Template"">
-                <Setter.Value>
-                    <ControlTemplate TargetType=""ScrollBar"">
-                        <Grid>
-                            <Border Background=""#1A1C21"" CornerRadius=""4""/>
-                            <Track Name=""PART_Track"" IsDirectionReversed=""true"">
-                                <Track.Thumb>
-                                    <Thumb>
-                                        <Thumb.Style>
-                                            <Style TargetType=""Thumb"">
-                                                <Setter Property=""Template"">
-                                                    <Setter.Value>
-                                                        <ControlTemplate TargetType=""Thumb"">
-                                                            <Border Background=""#3A3D45"" CornerRadius=""4"" Margin=""1""/>
-                                                        </ControlTemplate>
-                                                    </Setter.Value>
-                                                </Setter>
-                                            </Style>
-                                        </Thumb.Style>
-                                    </Thumb>
-                                </Track.Thumb>
-                            </Track>
-                        </Grid>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-        <!-- ═══════════ TITLE BAR BUTTON ═══════════ -->
-        <Style x:Key=""TitleBarBtn"" TargetType=""Button"">
-            <Setter Property=""Background"" Value=""Transparent""/>
-            <Setter Property=""Foreground"" Value=""#9CA3AF""/>
-            <Setter Property=""BorderThickness"" Value=""0""/>
-            <Setter Property=""Width"" Value=""46""/>
-            <Setter Property=""Height"" Value=""36""/>
-            <Setter Property=""FontSize"" Value=""13""/>
-            <Setter Property=""Cursor"" Value=""Hand""/>
-            <Setter Property=""Template"">
-                <Setter.Value>
-                    <ControlTemplate TargetType=""Button"">
-                        <Border Name=""bg"" Background=""{TemplateBinding Background}"">
-                            <ContentPresenter HorizontalAlignment=""Center"" VerticalAlignment=""Center""/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property=""IsMouseOver"" Value=""True"">
-                                <Setter TargetName=""bg"" Property=""Background"" Value=""#2A2D35""/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-        <Style x:Key=""TitleBarCloseBtn"" TargetType=""Button"" BasedOn=""{StaticResource TitleBarBtn}"">
-            <Setter Property=""Template"">
-                <Setter.Value>
-                    <ControlTemplate TargetType=""Button"">
-                        <Border Name=""bg"" Background=""{TemplateBinding Background}"">
-                            <ContentPresenter HorizontalAlignment=""Center"" VerticalAlignment=""Center""/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property=""IsMouseOver"" Value=""True"">
-                                <Setter TargetName=""bg"" Property=""Background"" Value=""#C42B1C""/>
-                                <Setter Property=""Foreground"" Value=""White""/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
-    </Window.Resources>
-    
-    <!-- MAIN WRAPPER -->
-    <Border Background=""#181A1F"" CornerRadius=""10"" BorderBrush=""#2A2D33"" BorderThickness=""1"">
-        <Grid>
-            <Grid.RowDefinitions>
-                <RowDefinition Height=""36""/>
-                <RowDefinition Height=""*""/>
-            </Grid.RowDefinitions>
-
-            <!-- ═══ CUSTOM TITLE BAR ═══ -->
-            <Grid Grid.Row=""0"" Name=""TitleBar"">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width=""*""/>
-                    <ColumnDefinition Width=""Auto""/>
-                </Grid.ColumnDefinitions>
-
-                <!-- Title text -->
-                <StackPanel Orientation=""Horizontal"" VerticalAlignment=""Center"" Margin=""14,0,0,0"">
-                    <TextBlock Text=""⬡"" Foreground=""#3B82F6"" FontSize=""14"" Margin=""0,0,8,0"" VerticalAlignment=""Center""/>
-                    <TextBlock Text=""Quản lý Chi tiết Trích"" FontSize=""12"" Foreground=""#9CA3AF"" FontWeight=""SemiBold"" VerticalAlignment=""Center""/>
-                </StackPanel>
-
-                <!-- Window control buttons -->
-                <StackPanel Grid.Column=""1"" Orientation=""Horizontal"">
-                    <Button Name=""BtnMinimize"" Content=""─"" Style=""{StaticResource TitleBarBtn}""/>
-                    <Button Name=""BtnMaximize"" Content=""☐"" Style=""{StaticResource TitleBarBtn}""/>
-                    <Button Name=""BtnClose"" Content=""✕"" Style=""{StaticResource TitleBarCloseBtn}""/>
-                </StackPanel>
-            </Grid>
-
-            <!-- ═══ CONTENT ═══ -->
-            <Grid Grid.Row=""1"" Margin=""16,4,16,16"">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height=""Auto""/>
-                    <RowDefinition Height=""*""/>
-                    <RowDefinition Height=""Auto""/>
-                </Grid.RowDefinitions>
-
-                <!-- Header -->
-                <Border Grid.Row=""0"" Margin=""0,0,0,10"">
-                    <TextBlock Text=""CHI TIẾT TRÍCH"" FontSize=""13"" FontWeight=""Bold"" Foreground=""#6B7280""/>
-                </Border>
-
-                <!-- TreeView Container -->
-                <Border Grid.Row=""1"" Background=""#1F2127"" CornerRadius=""10""
-                    BorderBrush=""#2A2D33"" BorderThickness=""1"" Padding=""8"">
-                    <TreeView Name=""MainTreeView"" Background=""Transparent"" BorderThickness=""0""
-                        ScrollViewer.HorizontalScrollBarVisibility=""Disabled"">
-                        <TreeView.ItemTemplate>
-                            <HierarchicalDataTemplate ItemsSource=""{Binding Children}"">
-                                <TextBlock Text=""{Binding Title}"" FontSize=""12.5""
-                                    FontWeight=""SemiBold"" Foreground=""#D1D5DB""
-                                    TextTrimming=""CharacterEllipsis""/>
-                            </HierarchicalDataTemplate>
-                        </TreeView.ItemTemplate>
-                    </TreeView>
-                </Border>
-
-                <!-- Footer -->
-                <Grid Grid.Row=""2"" Margin=""0,10,0,0"">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width=""Auto""/>
-                        <ColumnDefinition Width=""Auto""/>
-                        <ColumnDefinition Width=""*""/>
-                    </Grid.ColumnDefinitions>
-                    
-                    <Button Name=""BtnRefresh"" Content=""Làm mới"" Width=""100"" Height=""32"" Grid.Column=""0"" Margin=""0,0,8,0""/>
-                    <Button Name=""BtnGoTo"" Content=""Đi đến"" Width=""100"" Height=""32"" Grid.Column=""1""/>
-                    <TextBlock Text=""Double-click để zoom nhanh"" Foreground=""#6B7280"" FontSize=""11""
-                        VerticalAlignment=""Center"" HorizontalAlignment=""Right"" Grid.Column=""2""/>
-                </Grid>
-            </Grid>
-        </Grid>
-    </Border>
-</Window>";
-
-            // Parse XAML
-            Window window = (Window)XamlReader.Parse(xaml);
-            
-            // Apply properties to current instance
-            // WindowStyle và AllowsTransparency phải set TRƯỚC khi window handle được tạo
-            this.WindowStyle = WindowStyle.None;
-            this.AllowsTransparency = true;
-            this.Title = window.Title;
-            this.Width = window.Width;
-            this.Height = window.Height;
-            this.WindowStartupLocation = window.WindowStartupLocation;
-            this.ResizeMode = window.ResizeMode;
-            this.Background = window.Background;
-            this.Foreground = window.Foreground;
-            this.FontFamily = window.FontFamily;
-            this.Resources = window.Resources;
-            this.Content = window.Content;
-
-            // Find controls
-            treeView = (TreeView)this.FindName("MainTreeView");
-            if (treeView == null) 
+            if (e.ClickCount == 2)
             {
-                treeView = LogicalTreeHelper.FindLogicalNode((DependencyObject)this.Content, "MainTreeView") as TreeView;
+                this.WindowState = this.WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
             }
-            
-            btnRefresh = LogicalTreeHelper.FindLogicalNode((DependencyObject)this.Content, "BtnRefresh") as Button;
-            btnGoTo = LogicalTreeHelper.FindLogicalNode((DependencyObject)this.Content, "BtnGoTo") as Button;
-
-            // Title bar events
-            var titleBar = LogicalTreeHelper.FindLogicalNode((DependencyObject)this.Content, "TitleBar") as Grid;
-            if (titleBar != null)
+            else if (e.LeftButton == MouseButtonState.Pressed)
             {
-                titleBar.MouseLeftButtonDown += (s, e) =>
-                {
-                    if (e.ClickCount == 2)
-                    {
-                        this.WindowState = this.WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
-                    }
-                    else
-                    {
-                        this.DragMove();
-                    }
-                };
+                this.DragMove();
             }
-            
-            var btnMin = LogicalTreeHelper.FindLogicalNode((DependencyObject)this.Content, "BtnMinimize") as Button;
-            var btnMax = LogicalTreeHelper.FindLogicalNode((DependencyObject)this.Content, "BtnMaximize") as Button;
-            var btnCloseWin = LogicalTreeHelper.FindLogicalNode((DependencyObject)this.Content, "BtnClose") as Button;
-            
-            if (btnMin != null) btnMin.Click += (s, e) => this.WindowState = WindowState.Minimized;
-            if (btnMax != null) btnMax.Click += (s, e) => this.WindowState = this.WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
-            if (btnCloseWin != null) btnCloseWin.Click += (s, e) => this.Close();
+        }
 
-            // Content events
-            if (btnRefresh != null) btnRefresh.Click += (s, e) => RefreshData();
-            if (btnGoTo != null) btnGoTo.Click += (s, e) => GoToSelectedNode();
-            
-            if (treeView != null) 
-            {
-                treeView.MouseDoubleClick += (s, e) => GoToSelectedNode();
-            }
+        private void BtnMinimize_Click(object sender, RoutedEventArgs e)
+        {
+            this.WindowState = WindowState.Minimized;
+        }
+
+        private void BtnMaximize_Click(object sender, RoutedEventArgs e)
+        {
+            this.WindowState = this.WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+        }
+
+        private void BtnClose_Click(object sender, RoutedEventArgs e)
+        {
+            this.Close();
+        }
+
+        private void BtnRefresh_Click(object sender, RoutedEventArgs e)
+        {
+            RefreshData();
+        }
+
+        private void BtnGoTo_Click(object sender, RoutedEventArgs e)
+        {
+            GoToSelectedNode();
         }
 
         private void RefreshData()
         {
-            if (treeView == null) return;
+            if (MainTreeView == null) return;
             
             var doc = Application.DocumentManager.MdiActiveDocument;
             if (doc == null) return;
 
-            var mappings = Callout.Commands.CalloutCommand.GetCalloutMappings(doc.Database);
+            var mappings = Callout.Logic.CalloutCoreLogic.GetCalloutMappings(doc.Database);
             if (mappings.Count == 0)
             {
-                treeView.ItemsSource = new List<CalloutNodeData> { new CalloutNodeData { Title = "Chưa có dữ liệu trích xuất nào trong bản vẽ này." } };
+                MainTreeView.ItemsSource = new List<CalloutNodeData> { new CalloutNodeData { Title = "Chưa có dữ liệu trích xuất nào trong bản vẽ này." } };
                 return;
             }
 
@@ -490,12 +126,12 @@ namespace Callout.UI
                         BlockReference blk = tr.GetObject(id, OpenMode.ForRead) as BlockReference;
                         if (blk != null)
                         {
-                            string bName = blk.IsDynamicBlock ? ((BlockTableRecord)tr.GetObject(blk.DynamicBlockTableRecord, OpenMode.ForRead)).Name : blk.Name;
-                            if (bName.Equals(Callout.Services.CalloutConfig.TitleBlockName, StringComparison.OrdinalIgnoreCase))
+                            string bName = CalloutHelpers.GetEffectiveBlockName(tr, blk);
+                            if (bName.Equals(CalloutConfig.TitleBlockName, StringComparison.OrdinalIgnoreCase))
                             {
                                 try
                                 {
-                                    string sheetNo = GetAttributeValue(tr, blk, Callout.Services.CalloutConfig.SheetNumberTag);
+                                    string sheetNo = CalloutHelpers.GetAttributeValue(tr, blk, CalloutConfig.SheetNumberTag);
                                     if (sheetNo != null) tbData.Add(Tuple.Create(blk.GeometricExtents, sheetNo));
                                 }
                                 catch { }
@@ -508,13 +144,13 @@ namespace Callout.UI
                 foreach (var kvp in mappings)
                 {
                     ObjectId sourceId = kvp.Key;
-                    List<Callout.Commands.CalloutBubblePair> pairs = kvp.Value;
+                    List<Callout.Logic.CalloutBubblePair> pairs = kvp.Value;
 
                     if (sourceId.IsErased || sourceId.IsNull) continue;
                     BlockReference sourceBlk = tr.GetObject(sourceId, OpenMode.ForRead) as BlockReference;
                     if (sourceBlk == null || sourceBlk.IsErased) continue;
 
-                    string bName = sourceBlk.IsDynamicBlock ? ((BlockTableRecord)tr.GetObject(sourceBlk.DynamicBlockTableRecord, OpenMode.ForRead)).Name : sourceBlk.Name;
+                    string bName = CalloutHelpers.GetEffectiveBlockName(tr, sourceBlk);
                     
                     string sourceSheet = "Trống";
                     try {
@@ -548,8 +184,8 @@ namespace Callout.UI
                         BlockReference titleBubble = tr.GetObject(bId, OpenMode.ForRead) as BlockReference;
                         if (titleBubble != null && !titleBubble.IsErased)
                         {
-                            string viewNum = GetAttributeValue(tr, titleBubble, "VIEWNUMBER") ?? "?";
-                            string detailSheet = GetAttributeValue(tr, titleBubble, "SHEETNUMBER");
+                            string viewNum = CalloutHelpers.GetAttributeValue(tr, titleBubble, "VIEWNUMBER") ?? "?";
+                            string detailSheet = CalloutHelpers.GetAttributeValue(tr, titleBubble, "SHEETNUMBER");
                             if (string.IsNullOrEmpty(detailSheet)) detailSheet = "Trống";
 
                             CalloutNodeData detailNode = new CalloutNodeData {
@@ -573,13 +209,13 @@ namespace Callout.UI
                 tr.Commit();
             }
             
-            treeView.ItemsSource = rootNodes;
+            MainTreeView.ItemsSource = rootNodes;
             
             // Expand all by default — kế thừa Style gốc từ Resources, chỉ thêm IsExpanded
-            Style baseStyle = treeView.FindResource(typeof(TreeViewItem)) as Style;
+            Style baseStyle = MainTreeView.FindResource(typeof(TreeViewItem)) as Style;
             Style expandedStyle = new Style(typeof(TreeViewItem), baseStyle);
             expandedStyle.Setters.Add(new Setter(TreeViewItem.IsExpandedProperty, true));
-            treeView.ItemContainerStyle = expandedStyle;
+            MainTreeView.ItemContainerStyle = expandedStyle;
         }
 
         /// <summary>
@@ -632,23 +268,11 @@ namespace Callout.UI
             );
         }
 
-        private string GetAttributeValue(Transaction tr, BlockReference blockRef, string tag)
-        {
-            foreach (ObjectId attId in blockRef.AttributeCollection)
-            {
-                if (attId.IsErased) continue;
-                AttributeReference attRef = tr.GetObject(attId, OpenMode.ForRead) as AttributeReference;
-                if (attRef != null && attRef.Tag.Equals(tag, StringComparison.OrdinalIgnoreCase))
-                {
-                    return attRef.TextString;
-                }
-            }
-            return null;
-        }
+
 
         private void GoToSelectedNode()
         {
-            var data = treeView.SelectedItem as CalloutNodeData;
+            var data = MainTreeView.SelectedItem as CalloutNodeData;
             if (data == null || data.ObjectId == null) return;
             
             ObjectId targetId = data.ObjectId;

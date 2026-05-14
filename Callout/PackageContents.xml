@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApplicationPackage SchemaVersion="1.0" AppVersion="1.0.0" Name="Callout Plugin" ProductCode="{A7D3E1F4-5B2C-4A8E-9F10-C6D7E8F9A0B1}">
+  <CompanyDetails Name="TH Tools" Url="https://github.com/hvtam9archi-cpu" />
+  <Components>
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="R24.0" SeriesMax="R24.3" />
+    <ComponentEntry AppName="Callout" Version="1.0" ModuleName="./Contents/Callout.dll"
+                    AppDescription="AutoCAD Callout Detail Plugin"
+                    LoadOnCommandInvocation="True" LoadOnAutoCADStartup="True">
+      <Commands GroupName="CALLOUT_GROUP">
+        <Command Local="CT" Global="CT" />
+        <Command Local="CT1" Global="CT1" />
+        <Command Local="CT2" Global="CT2" />
+        <Command Local="CTS" Global="CTS" />
+      </Commands>
+    </ComponentEntry>
+  </Components>
+</ApplicationPackage>

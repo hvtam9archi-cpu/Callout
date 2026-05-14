@@ -1,0 +1,182 @@
+<Window x:Class="Callout.UI.CalloutManagerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Quản lý Chi tiết Trích (CTS)" Width="600" Height="500"
+        WindowStartupLocation="CenterScreen" ResizeMode="CanResizeWithGrip"
+        WindowStyle="None" AllowsTransparency="True"
+        Background="Transparent" Foreground="#E8EAED" FontFamily="Segoe UI">
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="DarkTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+
+            <!-- ═══ TREEVIEW GRADIENT BRUSHES ═══ -->
+            <LinearGradientBrush x:Key="NodeBg" StartPoint="0,0" EndPoint="0,1">
+                <GradientStop Color="#2B2D32" Offset="0"/>
+                <GradientStop Color="#232529" Offset="1"/>
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="NodeBgHover" StartPoint="0,0" EndPoint="0,1">
+                <GradientStop Color="#353840" Offset="0"/>
+                <GradientStop Color="#2B2D34" Offset="1"/>
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="NodeBgSelected" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Color="#1A4A6E" Offset="0"/>
+                <GradientStop Color="#0D3A5C" Offset="1"/>
+            </LinearGradientBrush>
+
+            <!-- ═══ CARET TOGGLE ═══ -->
+            <Style x:Key="CaretToggleStyle" TargetType="ToggleButton">
+                <Setter Property="Focusable" Value="False"/>
+                <Setter Property="Width" Value="22"/>
+                <Setter Property="Height" Value="22"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ToggleButton">
+                            <Border Background="Transparent" CornerRadius="4" Width="22" Height="22">
+                                <Path x:Name="Arrow" Fill="#6B7280" Data="M 5 3 L 5 11 L 11 7 Z" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsChecked" Value="True">
+                                    <Setter TargetName="Arrow" Property="Data" Value="M 3 5 L 11 5 L 7 11 Z"/>
+                                    <Setter TargetName="Arrow" Property="Fill" Value="#9CA3AF"/>
+                                </Trigger>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="Arrow" Property="Fill" Value="#60A5FA"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <!-- ═══ TREEVIEWITEM ═══ -->
+            <Style TargetType="TreeViewItem">
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="Padding" Value="0"/>
+                <Setter Property="Margin" Value="0,2,0,2"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="TreeViewItem">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition/>
+                                </Grid.RowDefinitions>
+                                <Grid Grid.Row="0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="24"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <ToggleButton x:Name="Expander" Style="{StaticResource CaretToggleStyle}" IsChecked="{Binding Path=IsExpanded, RelativeSource={RelativeSource TemplatedParent}}" ClickMode="Press" VerticalAlignment="Center"/>
+                                    <Border Name="Bd" Grid.Column="1" Background="{StaticResource NodeBg}" BorderBrush="#333640" BorderThickness="1" CornerRadius="8" MinHeight="42" Margin="0,1,0,1" SnapsToDevicePixels="True">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="14"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Border Grid.Column="0" Background="{Binding IndicatorColor}" CornerRadius="4,0,0,4" Margin="0" Width="5"/>
+                                            <ContentPresenter x:Name="PART_Header" Grid.Column="1" ContentSource="Header" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="14,8,12,8"/>
+                                        </Grid>
+                                    </Border>
+                                </Grid>
+                                <Grid Grid.Row="1" Margin="12,0,0,0">
+                                    <Border BorderThickness="1,0,0,0" BorderBrush="#2A2D33" Margin="12,0,0,0" HorizontalAlignment="Left"/>
+                                    <ItemsPresenter x:Name="ItemsHost" Margin="24,0,0,0"/>
+                                </Grid>
+                            </Grid>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsExpanded" Value="false">
+                                    <Setter TargetName="ItemsHost" Property="Visibility" Value="Collapsed"/>
+                                </Trigger>
+                                <Trigger Property="HasItems" Value="false">
+                                    <Setter TargetName="Expander" Property="Visibility" Value="Hidden"/>
+                                </Trigger>
+                                <Trigger Property="IsSelected" Value="true">
+                                    <Setter TargetName="Bd" Property="Background" Value="{StaticResource NodeBgSelected}"/>
+                                    <Setter TargetName="Bd" Property="BorderBrush" Value="#1E6DA0"/>
+                                </Trigger>
+                                <MultiTrigger>
+                                    <MultiTrigger.Conditions>
+                                        <Condition Property="IsSelected" Value="false"/>
+                                        <Condition Property="IsMouseOver" Value="true" SourceName="Bd"/>
+                                    </MultiTrigger.Conditions>
+                                    <Setter TargetName="Bd" Property="Background" Value="{StaticResource NodeBgHover}"/>
+                                    <Setter TargetName="Bd" Property="BorderBrush" Value="#454850"/>
+                                </MultiTrigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <Border Background="#181A1F" CornerRadius="10" BorderBrush="#333640" BorderThickness="1">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="40"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="50"/>
+            </Grid.RowDefinitions>
+
+            <!-- ═══ TITLE BAR ═══ -->
+            <Border Grid.Row="0" Background="#12141A" CornerRadius="10,10,0,0">
+                <Grid Name="TitleBar" MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0">
+                        <Border Width="22" Height="22" CornerRadius="4" Background="#2563EB" Margin="0,0,8,0">
+                            <TextBlock Text="C" Foreground="White" FontWeight="Bold" FontSize="12" FontFamily="Segoe UI" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <TextBlock Text="Quản lý Chi tiết Trích" FontSize="12" Foreground="#E8EAED" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                        <Button Name="BtnMinimize" Content="─" Style="{StaticResource TitleBarBtn}" Click="BtnMinimize_Click"/>
+                        <Button Name="BtnMaximize" Content="☐" Style="{StaticResource TitleBarBtn}" Click="BtnMaximize_Click"/>
+                        <Button Name="BtnClose" Content="✕" Style="{StaticResource TitleBarCloseBtn}" Click="BtnClose_Click"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ═══ CONTENT (Row 1) ═══ -->
+            <Grid Grid.Row="1" Margin="14,8,14,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                <TextBlock Grid.Row="0" Text="CHI TIẾT TRÍCH" FontSize="12" FontWeight="Bold" Foreground="#2563EB" Margin="0,0,0,6"/>
+                <Border Grid.Row="1" Background="#2B2D32" CornerRadius="6" BorderBrush="#333640" BorderThickness="1" Padding="8">
+                    <TreeView Name="MainTreeView" Background="Transparent" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <TreeView.ItemTemplate>
+                            <HierarchicalDataTemplate ItemsSource="{Binding Children}">
+                                <TextBlock Text="{Binding Title}" FontSize="12.5" FontWeight="SemiBold" Foreground="#D1D5DB" TextTrimming="CharacterEllipsis"/>
+                            </HierarchicalDataTemplate>
+                        </TreeView.ItemTemplate>
+
+
+
+
+					</TreeView>
+                </Border>
+            </Grid>
+
+            <!-- ═══ BOTTOM BAR (Row 2) ═══ -->
+            <Border Grid.Row="2" Background="#12141A" CornerRadius="0,0,10,10" Padding="14,8">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Double-click để zoom nhanh" Foreground="#6B7280" FontSize="11" VerticalAlignment="Center" Grid.Column="0"/>
+                    <Button Name="BtnRefresh" Content="Làm mới" Width="100" Height="34" Grid.Column="1" Margin="0,0,8,0" Click="BtnRefresh_Click"/>
+                    <Button Name="BtnGoTo" Content="Đi đến" Width="100" Height="34" Grid.Column="2" Click="BtnGoTo_Click"/>
+                </Grid>
+            </Border>
+        </Grid>
+    </Border>
+</Window>

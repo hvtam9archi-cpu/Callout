@@ -70,7 +70,7 @@ namespace Callout.Services
         private static void Database_ObjectModified(object sender, ObjectEventArgs e)
         {
             if (_isUpdating || _needsUpdate) return;
-            
+
             if (e.DBObject is BlockReference || e.DBObject is AttributeReference)
             {
                 _needsUpdate = true;
@@ -80,9 +80,9 @@ namespace Callout.Services
         private static void Application_Idle(object sender, EventArgs e)
         {
             if (!_needsUpdate || _isUpdating) return;
-            
+
             Document doc = Application.DocumentManager.MdiActiveDocument;
-            if (doc == null || string.IsNullOrEmpty(CalloutConfig.TitleBlockName) || string.IsNullOrEmpty(CalloutConfig.SheetNumberTag)) 
+            if (doc == null || string.IsNullOrEmpty(CalloutConfig.TitleBlockName) || string.IsNullOrEmpty(CalloutConfig.SheetNumberTag))
             {
                 _needsUpdate = false;
                 return;
@@ -95,7 +95,11 @@ namespace Callout.Services
             {
                 UpdateCalloutsPositional(doc);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Application.DocumentManager.MdiActiveDocument?.Editor
+                    .WriteMessage($"\n[Callout Watcher] Lỗi cập nhật: {ex.Message}");
+            }
             finally
             {
                 _isUpdating = false;
@@ -108,16 +112,15 @@ namespace Callout.Services
             using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
             {
                 BlockTableRecord currentSpace = tr.GetObject(doc.Database.CurrentSpaceId, OpenMode.ForRead) as BlockTableRecord;
-                
-                List<BlockReference> titleBlocks = new List<BlockReference>();
 
+                List<BlockReference> titleBlocks = new List<BlockReference>();
                 foreach (ObjectId id in currentSpace)
                 {
                     if (id.IsErased) continue;
                     BlockReference blk = tr.GetObject(id, OpenMode.ForRead) as BlockReference;
                     if (blk != null)
                     {
-                        string bName = blk.IsDynamicBlock ? ((BlockTableRecord)tr.GetObject(blk.DynamicBlockTableRecord, OpenMode.ForRead)).Name : blk.Name;
+                        string bName = CalloutHelpers.GetEffectiveBlockName(tr, blk);
                         if (bName.Equals(CalloutConfig.TitleBlockName, StringComparison.OrdinalIgnoreCase))
                         {
                             titleBlocks.Add(blk);
@@ -128,25 +131,32 @@ namespace Callout.Services
                 var tbData = new List<Tuple<Extents3d, string>>();
                 foreach (var tb in titleBlocks)
                 {
-                    try {
+                    try
+                    {
                         Extents3d ext = tb.GeometricExtents;
-                        string sheetNo = GetAttributeValue(tr, tb, CalloutConfig.SheetNumberTag);
+                        string sheetNo = CalloutHelpers.GetAttributeValue(tr, tb, CalloutConfig.SheetNumberTag);
                         if (sheetNo != null) tbData.Add(Tuple.Create(ext, sheetNo));
-                    } catch { }
+                    }
+                    catch (Exception ex)
+                    {
+                        Application.DocumentManager.MdiActiveDocument?.Editor
+                            .WriteMessage($"\n[Callout Watcher] Không đọc được TitleBlock: {ex.Message}");
+                    }
                 }
 
-                var mappings = Callout.Commands.CalloutCommand.GetCalloutMappings(doc.Database);
+                var mappings = Callout.Logic.CalloutCoreLogic.GetCalloutMappings(doc.Database);
                 foreach (var kvp in mappings)
                 {
                     foreach (var pair in kvp.Value)
                     {
                         if (pair.TitleBubbleId.IsErased || pair.TitleBubbleId.IsNull) continue;
-                        
+
                         BlockReference titleBubble = tr.GetObject(pair.TitleBubbleId, OpenMode.ForRead) as BlockReference;
                         if (titleBubble == null || titleBubble.IsErased) continue;
 
                         string targetSheet = "";
-                        try {
+                        try
+                        {
                             Point3d pos = titleBubble.Position;
                             foreach (var tb in tbData)
                             {
@@ -157,13 +167,18 @@ namespace Callout.Services
                                     break;
                                 }
                             }
-                        } catch { }
+                        }
+                        catch (Exception ex)
+                        {
+                            Application.DocumentManager.MdiActiveDocument?.Editor
+                                .WriteMessage($"\n[Callout Watcher] Lỗi xác định Sheet: {ex.Message}");
+                        }
 
-                        string currentSheet = GetAttributeValue(tr, titleBubble, "SHEETNUMBER");
+                        string currentSheet = CalloutHelpers.GetAttributeValue(tr, titleBubble, "SHEETNUMBER");
                         if (currentSheet != targetSheet)
                         {
                             titleBubble.UpgradeOpen();
-                            SetAttributeValue(tr, titleBubble, "SHEETNUMBER", targetSheet);
+                            CalloutHelpers.SetAttributeValue(tr, titleBubble, "SHEETNUMBER", targetSheet);
                         }
 
                         if (!pair.SourceBubbleId.IsErased && !pair.SourceBubbleId.IsNull)
@@ -171,11 +186,11 @@ namespace Callout.Services
                             BlockReference sourceBubble = tr.GetObject(pair.SourceBubbleId, OpenMode.ForRead) as BlockReference;
                             if (sourceBubble != null && !sourceBubble.IsErased)
                             {
-                                string sourceCurrentSheet = GetAttributeValue(tr, sourceBubble, "SHEETNUMBER");
+                                string sourceCurrentSheet = CalloutHelpers.GetAttributeValue(tr, sourceBubble, "SHEETNUMBER");
                                 if (sourceCurrentSheet != targetSheet)
                                 {
                                     sourceBubble.UpgradeOpen();
-                                    SetAttributeValue(tr, sourceBubble, "SHEETNUMBER", targetSheet);
+                                    CalloutHelpers.SetAttributeValue(tr, sourceBubble, "SHEETNUMBER", targetSheet);
                                 }
                             }
                         }
@@ -183,34 +198,6 @@ namespace Callout.Services
                 }
 
                 tr.Commit();
-            }
-        }
-
-        private static string GetAttributeValue(Transaction tr, BlockReference blockRef, string tag)
-        {
-            foreach (ObjectId attId in blockRef.AttributeCollection)
-            {
-                if (attId.IsErased) continue;
-                AttributeReference attRef = tr.GetObject(attId, OpenMode.ForRead) as AttributeReference;
-                if (attRef != null && attRef.Tag.Equals(tag, StringComparison.OrdinalIgnoreCase))
-                {
-                    return attRef.TextString;
-                }
-            }
-            return null;
-        }
-
-        private static void SetAttributeValue(Transaction tr, BlockReference blockRef, string tag, string value)
-        {
-            foreach (ObjectId attId in blockRef.AttributeCollection)
-            {
-                if (attId.IsErased) continue;
-                AttributeReference attRef = tr.GetObject(attId, OpenMode.ForWrite) as AttributeReference;
-                if (attRef != null && attRef.Tag.Equals(tag, StringComparison.OrdinalIgnoreCase))
-                {
-                    attRef.TextString = value;
-                    return;
-                }
             }
         }
     }
