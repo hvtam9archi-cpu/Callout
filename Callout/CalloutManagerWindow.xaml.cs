@@ -45,6 +45,9 @@ namespace Callout.UI
         public CalloutManagerWindow()
         {
             InitializeComponent();
+
+            if (System.ComponentModel.DesignerProperties.GetIsInDesignMode(this)) return;
+
             RefreshData();
             Application.DocumentManager.DocumentActivated += DocumentManager_DocumentActivated;
             this.Closed += (s, e) => Application.DocumentManager.DocumentActivated -= DocumentManager_DocumentActivated;

@@ -228,25 +228,56 @@ namespace Callout.Logic
 
                     if (jigResult.Status != PromptStatus.OK) return;
 
-                    PromptDoubleOptions promptDimScaleOptions = new PromptDoubleOptions("\nDimscale chi tiết trích: ")
-                    {
-                        AllowZero = false,
-                        AllowNegative = false,
-                        DefaultValue = calloutScale,
-                        UseDefaultValue = true
-                    };
-
-                    PromptDoubleResult promptDimScaleResult = editor.GetDouble(promptDimScaleOptions);
-                    if (promptDimScaleResult.Status != PromptStatus.OK) return;
-
-                    double dimensionScale = promptDimScaleResult.Value;
                     Point3d finalPosition = calloutJig.CurrentPosition;
+                    double? detailAutoScale = null;
+                    using (Transaction tr2 = database.TransactionManager.StartTransaction())
+                    {
+                        detailAutoScale = CalloutHelpers.GetScaleFromTitleBlockAtPosition(database, tr2, finalPosition);
+                        tr2.Commit();
+                    }
+
+                    double detailDimensionScale;
+                    if (detailAutoScale.HasValue)
+                    {
+                        detailDimensionScale = detailAutoScale.Value;
+                        editor.WriteMessage($"\nĐã tự động lấy Dimscale chi tiết trích từ khung bản vẽ: {detailDimensionScale}");
+                    }
+                    else
+                    {
+                        PromptDoubleOptions promptDimScaleOptions = new PromptDoubleOptions("\nDimscale chi tiết trích: ")
+                        {
+                            AllowZero = false,
+                            AllowNegative = false,
+                            DefaultValue = calloutScale,
+                            UseDefaultValue = true
+                        };
+
+                        PromptDoubleResult promptDimScaleResult = editor.GetDouble(promptDimScaleOptions);
+                        if (promptDimScaleResult.Status != PromptStatus.OK) return;
+
+                        detailDimensionScale = promptDimScaleResult.Value;
+                    }
+
+                    double? sourceAutoScale = null;
+                    using (Transaction tr3 = database.TransactionManager.StartTransaction())
+                    {
+                        sourceAutoScale = CalloutHelpers.GetScaleFromTitleBlockAtPosition(database, tr3, basePoint);
+                        tr3.Commit();
+                    }
+                    
+                    double sourceDimensionScale = sourceAutoScale ?? detailDimensionScale;
+                    if (sourceAutoScale.HasValue) 
+                    {
+                         editor.WriteMessage($"\nĐã tự động lấy Dimscale đối tượng gốc từ khung bản vẽ: {sourceDimensionScale}");
+                    }
+
+                    double dimensionScale = detailDimensionScale;
                     Matrix3d mathTransform = calloutJig.MathTransform;
 
                     Point3d sourceBubblePos = basePoint;
                     if (isFarCallout)
                     {
-                        sourceBubblePos = new Point3d(originalExtents.MaxPoint.X + (12.0 * dimensionScale), originalExtents.MaxPoint.Y + (12.0 * dimensionScale), 0);
+                        sourceBubblePos = new Point3d(originalExtents.MaxPoint.X + (12.0 * sourceDimensionScale), originalExtents.MaxPoint.Y + (12.0 * sourceDimensionScale), 0);
                     }
 
                     // 4. TRANSACTION ĐỢT 2: Thêm Viewport Block + Thêm Dimensions (Thao tác DB rồi đóng ngay)
@@ -265,7 +296,7 @@ namespace Callout.Logic
 
                             if (!isFarCallout)
                             {
-                                double dotDiameter = 1.5 * dimensionScale;
+                                double dotDiameter = 1.5 * sourceDimensionScale;
                                 var leaderEntities = CalloutGeometryService.CreateSmartLeader(originalExtents, mathTransform, dotDiameter);
                                 foreach (Entity ent in leaderEntities)
                                 {
@@ -283,9 +314,9 @@ namespace Callout.Logic
                                     {
                                         Point3d closestPoint = originalBoundaryCurve.GetClosestPointTo(sourceBubblePos, false);
                                         
-                                        double bubbleRadius = 6.0 * dimensionScale;
+                                        double bubbleRadius = 6.0 * sourceDimensionScale;
                                         Point3d leaderEnd = new Point3d(sourceBubblePos.X - bubbleRadius, sourceBubblePos.Y, 0);
-                                        double kneeX = Math.Max(leaderEnd.X - (4.0 * dimensionScale), closestPoint.X + (2.0 * dimensionScale));
+                                        double kneeX = Math.Max(leaderEnd.X - (4.0 * sourceDimensionScale), closestPoint.X + (2.0 * sourceDimensionScale));
                                         Point3d leaderKnee = new Point3d(kneeX, sourceBubblePos.Y, 0);
                                         
                                         using (Polyline bubbleLeader = new Polyline())
@@ -299,7 +330,7 @@ namespace Callout.Logic
                                             transaction.AddNewlyCreatedDBObject(bubbleLeader, true);
                                         }
 
-                                        using (Entity dot = CalloutHelpers.CreateLeaderDot(closestPoint, 2.0 * dimensionScale))
+                                        using (Entity dot = CalloutHelpers.CreateLeaderDot(closestPoint, 2.0 * sourceDimensionScale))
                                         {
                                             dot.LayerId = sourceLayerId;
                                             currentSpace.AppendEntity(dot);
@@ -309,7 +340,7 @@ namespace Callout.Logic
 
                                     using (BlockReference sourceBubble = new BlockReference(sourceBubblePos, detailBlockId))
                                     {
-                                        sourceBubble.ScaleFactors = new Scale3d(dimensionScale);
+                                        sourceBubble.ScaleFactors = new Scale3d(sourceDimensionScale);
                                         sourceBubble.LayerId = sourceLayerId;
                                         currentSpace.AppendEntity(sourceBubble);
                                         transaction.AddNewlyCreatedDBObject(sourceBubble, true);

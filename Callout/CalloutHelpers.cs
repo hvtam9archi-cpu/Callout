@@ -48,6 +48,49 @@ namespace Callout.Services
         }
 
         /// <summary>
+        /// Lấy tỷ lệ từ Attribute của Block Khung tại vị trí chỉ định.
+        /// Trả về null nếu không tìm thấy hoặc không parse được.
+        /// </summary>
+        public static double? GetScaleFromTitleBlockAtPosition(Database database, Transaction transaction, Point3d position)
+        {
+            if (string.IsNullOrEmpty(CalloutConfig.TitleBlockName) || string.IsNullOrEmpty(CalloutConfig.ScaleTag))
+                return null;
+
+            BlockTableRecord currentSpace = transaction.GetObject(database.CurrentSpaceId, OpenMode.ForRead) as BlockTableRecord;
+            foreach (ObjectId id in currentSpace)
+            {
+                if (id.IsErased) continue;
+                BlockReference blk = transaction.GetObject(id, OpenMode.ForRead) as BlockReference;
+                if (blk != null)
+                {
+                    string bName = GetEffectiveBlockName(transaction, blk);
+                    if (bName.Equals(CalloutConfig.TitleBlockName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Extents3d ext = blk.GeometricExtents;
+                        if (position.X >= ext.MinPoint.X && position.X <= ext.MaxPoint.X &&
+                            position.Y >= ext.MinPoint.Y && position.Y <= ext.MaxPoint.Y)
+                        {
+                            string scaleStr = GetAttributeValue(transaction, blk, CalloutConfig.ScaleTag);
+                            if (!string.IsNullOrEmpty(scaleStr))
+                            {
+                                string numPart = scaleStr;
+                                int idx = scaleStr.IndexOf('/');
+                                if (idx == -1) idx = scaleStr.IndexOf(':');
+                                if (idx != -1) numPart = scaleStr.Substring(idx + 1);
+
+                                if (double.TryParse(numPart, out double scaleVal))
+                                {
+                                    return scaleVal;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
         /// Gán Attribute từ Dictionary key-value vào BlockReference (tạo mới nếu chưa có).
         /// </summary>
         public static void ApplyDictionaryAttributes(Transaction transaction, BlockReference blockRef, Dictionary<string, string> attributeValues)

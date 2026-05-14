@@ -14,12 +14,20 @@ namespace Callout.UI
         {
             InitializeComponent();
             
+            if (System.ComponentModel.DesignerProperties.GetIsInDesignMode(this)) return;
+
             TxtBlockName.Text = Callout.Services.CalloutConfig.TitleBlockName;
             
             if (!string.IsNullOrEmpty(Callout.Services.CalloutConfig.SheetNumberTag))
             {
                 CbxAttributes.Items.Add(Callout.Services.CalloutConfig.SheetNumberTag);
                 CbxAttributes.SelectedItem = Callout.Services.CalloutConfig.SheetNumberTag;
+            }
+
+            if (!string.IsNullOrEmpty(Callout.Services.CalloutConfig.ScaleTag))
+            {
+                CbxScaleAttributes.Items.Add(Callout.Services.CalloutConfig.ScaleTag);
+                CbxScaleAttributes.SelectedItem = Callout.Services.CalloutConfig.ScaleTag;
             }
         }
 
@@ -59,6 +67,7 @@ namespace Callout.UI
                         TxtBlockName.Text = bName;
 
                         CbxAttributes.Items.Clear();
+                        CbxScaleAttributes.Items.Clear();
                         foreach (ObjectId attId in blk.AttributeCollection)
                         {
                             if (attId.IsErased) continue;
@@ -66,13 +75,19 @@ namespace Callout.UI
                             if (attRef != null)
                             {
                                 CbxAttributes.Items.Add(attRef.Tag);
+                                CbxScaleAttributes.Items.Add(attRef.Tag);
                             }
                         }
 
                         if (CbxAttributes.Items.Count > 0)
+                        {
                             CbxAttributes.SelectedIndex = 0;
+                            CbxScaleAttributes.SelectedIndex = 0;
+                        }
                         else
+                        {
                             MessageBox.Show("Block được chọn không có Attribute nào!", "Cảnh báo", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        }
                     }
                     tr.Commit();
                 }
@@ -83,14 +98,15 @@ namespace Callout.UI
 
         private void BtnSave_Click(object sender, RoutedEventArgs e)
         {
-            if (string.IsNullOrEmpty(TxtBlockName.Text) || CbxAttributes.SelectedItem == null)
+            if (string.IsNullOrEmpty(TxtBlockName.Text) || CbxAttributes.SelectedItem == null || CbxScaleAttributes.SelectedItem == null)
             {
-                MessageBox.Show("Vui lòng chọn Block và Attribute!", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show("Vui lòng chọn Block và các Attribute!", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
 
             Callout.Services.CalloutConfig.TitleBlockName = TxtBlockName.Text;
             Callout.Services.CalloutConfig.SheetNumberTag = CbxAttributes.SelectedItem.ToString();
+            Callout.Services.CalloutConfig.ScaleTag = CbxScaleAttributes.SelectedItem.ToString();
             
             Callout.Services.CalloutWatcher.TriggerManualUpdate();
 

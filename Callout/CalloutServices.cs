@@ -11,6 +11,7 @@ namespace Callout.Services
     {
         public static string TitleBlockName { get; set; } = "";
         public static string SheetNumberTag { get; set; } = "";
+        public static string ScaleTag { get; set; } = "";
     }
 
     public static class CalloutWatcher
@@ -128,14 +129,33 @@ namespace Callout.Services
                     }
                 }
 
-                var tbData = new List<Tuple<Extents3d, string>>();
+                var tbData = new List<Tuple<Extents3d, string, double?>>();
                 foreach (var tb in titleBlocks)
                 {
                     try
                     {
                         Extents3d ext = tb.GeometricExtents;
                         string sheetNo = CalloutHelpers.GetAttributeValue(tr, tb, CalloutConfig.SheetNumberTag);
-                        if (sheetNo != null) tbData.Add(Tuple.Create(ext, sheetNo));
+                        
+                        double? scaleVal = null;
+                        if (!string.IsNullOrEmpty(CalloutConfig.ScaleTag))
+                        {
+                            string scaleStr = CalloutHelpers.GetAttributeValue(tr, tb, CalloutConfig.ScaleTag);
+                            if (!string.IsNullOrEmpty(scaleStr))
+                            {
+                                string numPart = scaleStr;
+                                int idx = scaleStr.IndexOf('/');
+                                if (idx == -1) idx = scaleStr.IndexOf(':');
+                                if (idx != -1) numPart = scaleStr.Substring(idx + 1);
+
+                                if (double.TryParse(numPart, out double val))
+                                {
+                                    scaleVal = val;
+                                }
+                            }
+                        }
+
+                        if (sheetNo != null || scaleVal.HasValue) tbData.Add(Tuple.Create(ext, sheetNo, scaleVal));
                     }
                     catch (Exception ex)
                     {
@@ -155,6 +175,7 @@ namespace Callout.Services
                         if (titleBubble == null || titleBubble.IsErased) continue;
 
                         string targetSheet = "";
+                        double? targetScale = null;
                         try
                         {
                             Point3d pos = titleBubble.Position;
@@ -164,6 +185,7 @@ namespace Callout.Services
                                     pos.Y >= tb.Item1.MinPoint.Y && pos.Y <= tb.Item1.MaxPoint.Y)
                                 {
                                     targetSheet = tb.Item2;
+                                    targetScale = tb.Item3;
                                     break;
                                 }
                             }
@@ -171,14 +193,20 @@ namespace Callout.Services
                         catch (Exception ex)
                         {
                             Application.DocumentManager.MdiActiveDocument?.Editor
-                                .WriteMessage($"\n[Callout Watcher] Lỗi xác định Sheet: {ex.Message}");
+                                .WriteMessage($"\n[Callout Watcher] Lỗi xác định Sheet/Scale: {ex.Message}");
                         }
 
                         string currentSheet = CalloutHelpers.GetAttributeValue(tr, titleBubble, "SHEETNUMBER");
                         if (currentSheet != targetSheet)
                         {
                             titleBubble.UpgradeOpen();
-                            CalloutHelpers.SetAttributeValue(tr, titleBubble, "SHEETNUMBER", targetSheet);
+                            CalloutHelpers.SetAttributeValue(tr, titleBubble, "SHEETNUMBER", targetSheet ?? "");
+                        }
+
+                        if (targetScale.HasValue && Math.Abs(titleBubble.ScaleFactors.X - targetScale.Value) > 0.001)
+                        {
+                            if (!titleBubble.IsWriteEnabled) titleBubble.UpgradeOpen();
+                            titleBubble.ScaleFactors = new Scale3d(targetScale.Value);
                         }
 
                         if (!pair.SourceBubbleId.IsErased && !pair.SourceBubbleId.IsNull)
@@ -190,7 +218,29 @@ namespace Callout.Services
                                 if (sourceCurrentSheet != targetSheet)
                                 {
                                     sourceBubble.UpgradeOpen();
-                                    CalloutHelpers.SetAttributeValue(tr, sourceBubble, "SHEETNUMBER", targetSheet);
+                                    CalloutHelpers.SetAttributeValue(tr, sourceBubble, "SHEETNUMBER", targetSheet ?? "");
+                                }
+
+                                double? sourceTargetScale = null;
+                                try
+                                {
+                                    Point3d sourcePos = sourceBubble.Position;
+                                    foreach (var tb in tbData)
+                                    {
+                                        if (sourcePos.X >= tb.Item1.MinPoint.X && sourcePos.X <= tb.Item1.MaxPoint.X &&
+                                            sourcePos.Y >= tb.Item1.MinPoint.Y && sourcePos.Y <= tb.Item1.MaxPoint.Y)
+                                        {
+                                            sourceTargetScale = tb.Item3;
+                                            break;
+                                        }
+                                    }
+                                }
+                                catch {}
+
+                                if (sourceTargetScale.HasValue && Math.Abs(sourceBubble.ScaleFactors.X - sourceTargetScale.Value) > 0.001)
+                                {
+                                    if (!sourceBubble.IsWriteEnabled) sourceBubble.UpgradeOpen();
+                                    sourceBubble.ScaleFactors = new Scale3d(sourceTargetScale.Value);
                                 }
                             }
                         }

@@ -123,7 +123,7 @@
 
             <!-- ═══ TITLE BAR ═══ -->
             <Border Grid.Row="0" Background="#12141A" CornerRadius="10,10,0,0">
-                <Grid Name="TitleBar" MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+                <Grid Name="TitleBar" MouseLeftButtonDown="TitleBar_MouseLeftButtonDown" Background="Transparent">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
@@ -135,9 +135,9 @@
                         <TextBlock Text="Quản lý Chi tiết Trích" FontSize="12" Foreground="#E8EAED" FontWeight="SemiBold" VerticalAlignment="Center"/>
                     </StackPanel>
                     <StackPanel Grid.Column="1" Orientation="Horizontal">
-                        <Button Name="BtnMinimize" Content="─" Style="{StaticResource TitleBarBtn}" Click="BtnMinimize_Click"/>
-                        <Button Name="BtnMaximize" Content="☐" Style="{StaticResource TitleBarBtn}" Click="BtnMaximize_Click"/>
-                        <Button Name="BtnClose" Content="✕" Style="{StaticResource TitleBarCloseBtn}" Click="BtnClose_Click"/>
+                        <Button Name="BtnMinimize" Content="─" Style="{StaticResource TitleBarBtn}" Click="BtnMinimize_Click" VerticalAlignment="Top" Height="40" Width="46"/>
+                        <Button Name="BtnMaximize" Content="☐" Style="{StaticResource TitleBarBtn}" Click="BtnMaximize_Click" VerticalAlignment="Top" Height="40" Width="46"/>
+                        <Button Name="BtnClose" Content="✕" Style="{StaticResource TitleBarCloseBtn}" Click="BtnClose_Click" VerticalAlignment="Top" Height="40" Width="46"/>
                     </StackPanel>
                 </Grid>
             </Border>

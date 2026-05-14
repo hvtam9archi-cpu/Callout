@@ -58,21 +58,34 @@ namespace Callout
             {
                 RibbonControl ribbon = ComponentManager.Ribbon;
 
-                // Kiểm tra Tab đã tồn tại chưa
+                RibbonTab tab = null;
                 foreach (RibbonTab existingTab in ribbon.Tabs)
                 {
-                    if (existingTab.Id == TabId) return;
+                    if (existingTab.Id == TabId)
+                    {
+                        tab = existingTab;
+                        break;
+                    }
                 }
 
-                // Tạo Tab mới
-                RibbonTab tab = new RibbonTab
+                if (tab == null)
                 {
-                    Title = TabTitle,
-                    Id = TabId
-                };
+                    tab = new RibbonTab
+                    {
+                        Title = TabTitle,
+                        Id = TabId
+                    };
+                    ribbon.Tabs.Add(tab);
+                }
 
-                // Panel "Chi tiết Trích"
-                RibbonPanelSource panelSource = new RibbonPanelSource { Title = "Chi tiết Trích" };
+                string panelId = "CALLOUT_PANEL";
+                foreach (RibbonPanel existingPanel in tab.Panels)
+                {
+                    if (existingPanel.Source.Id == panelId || existingPanel.Source.Title == "Chi tiết Trích")
+                        return; // Panel đã tồn tại
+                }
+
+                RibbonPanelSource panelSource = new RibbonPanelSource { Title = "Chi tiết Trích", Id = panelId };
 
                 panelSource.Items.Add(CreateButton("CT", "Trích Chi Tiết", "Trích chi tiết gần (CT)", RibbonItemSize.Large));
                 panelSource.Items.Add(CreateButton("CT1", "Trích Xa", "Trích chi tiết xa (CT1)", RibbonItemSize.Large));
@@ -83,8 +96,7 @@ namespace Callout
                 RibbonPanel panel = new RibbonPanel { Source = panelSource };
                 tab.Panels.Add(panel);
 
-                ribbon.Tabs.Add(tab);
-                tab.IsActive = true; // Kích hoạt tab hiển thị ngay lập tức
+                tab.IsActive = true; 
             }
             catch (System.Exception ex)
             {
