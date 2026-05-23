@@ -456,7 +456,7 @@ namespace Callout.Logic
             }
         }
 
-        private static void ExtractGeometryRecursive(ObjectId blockRecordId, Matrix3d matrix, Extents3d clipBox, Matrix3d finalTransform, List<Point3d> validPoints, List<Arc> validArcs, Transaction transaction)
+        private static void ExtractGeometryRecursive(ObjectId blockRecordId, Matrix3d matrix, Extents3d clipBox, Matrix3d finalTransform, List<Point3d> validPoints, List<Arc> validArcs, List<Circle> validCircles, Transaction transaction)
         {
             using (BlockTableRecord blockRecord = (BlockTableRecord)transaction.GetObject(blockRecordId, OpenMode.ForRead))
             {
@@ -470,7 +470,7 @@ namespace Callout.Logic
                         {
                             Matrix3d newMatrix = matrix * blockReference.BlockTransform;
                             ObjectId targetRecordId = blockReference.IsDynamicBlock ? blockReference.DynamicBlockTableRecord : blockReference.BlockTableRecord;
-                            ExtractGeometryRecursive(targetRecordId, newMatrix, clipBox, finalTransform, validPoints, validArcs, transaction);
+                            ExtractGeometryRecursive(targetRecordId, newMatrix, clipBox, finalTransform, validPoints, validArcs, validCircles, transaction);
                         }
                         else if (entity is Line line)
                         {
@@ -482,6 +482,33 @@ namespace Callout.Logic
                             for (int i = 0; i < polyline.NumberOfVertices; i++)
                             {
                                 AddPointIfInsideClip(polyline.GetPoint3dAt(i).TransformBy(matrix), clipBox, finalTransform, validPoints);
+                            }
+                            // Phát hiện Polyline tròn (2 vertices + closed + bulge ≈ 1.0 = Circle)
+                            if (polyline.Closed && polyline.NumberOfVertices == 2 &&
+                                Math.Abs(Math.Abs(polyline.GetBulgeAt(0)) - 1.0) < 0.01 &&
+                                Math.Abs(Math.Abs(polyline.GetBulgeAt(1)) - 1.0) < 0.01)
+                            {
+                                try
+                                {
+                                    CircularArc2d seg0 = polyline.GetArcSegment2dAt(0);
+                                    Point3d centerWcs = new Point3d(seg0.Center.X, seg0.Center.Y, 0).TransformBy(matrix);
+                                    double r = seg0.Radius * matrix.GetScale();
+                                    if (IsInsideClip(centerWcs, clipBox) ||
+                                        IsInsideClip(centerWcs + new Vector3d(r, 0, 0), clipBox) ||
+                                        IsInsideClip(centerWcs + new Vector3d(-r, 0, 0), clipBox))
+                                    {
+                                        Circle syntheticCircle = new Circle(new Point3d(seg0.Center.X, seg0.Center.Y, 0), Vector3d.ZAxis, seg0.Radius);
+                                        syntheticCircle.SetDatabaseDefaults();
+                                        syntheticCircle.TransformBy(matrix * finalTransform);
+                                        validCircles.Add(syntheticCircle);
+                                    }
+                                }
+                                catch { /* Bỏ qua polyline-circle lỗi */ }
+                            }
+                            else
+                            {
+                                // Tách arc segments từ Polyline có bulge
+                                ExtractArcsFromPolyline(polyline, matrix, clipBox, finalTransform, validArcs);
                             }
                         }
                         else if (entity is Polyline2d polyline2d)
@@ -498,19 +525,58 @@ namespace Callout.Logic
                         {
                             Point3d centerWcs = circle.Center.TransformBy(matrix);
                             double r = circle.Radius * matrix.GetScale();
-                            AddPointIfInsideClip(centerWcs + new Vector3d(r, 0, 0), clipBox, finalTransform, validPoints);
-                            AddPointIfInsideClip(centerWcs + new Vector3d(-r, 0, 0), clipBox, finalTransform, validPoints);
-                            AddPointIfInsideClip(centerWcs + new Vector3d(0, r, 0), clipBox, finalTransform, validPoints);
-                            AddPointIfInsideClip(centerWcs + new Vector3d(0, -r, 0), clipBox, finalTransform, validPoints);
+                            // Quadrant points cho linear dim
+                            Point3d qRight = centerWcs + new Vector3d(r, 0, 0);
+                            Point3d qLeft  = centerWcs + new Vector3d(-r, 0, 0);
+                            Point3d qTop   = centerWcs + new Vector3d(0, r, 0);
+                            Point3d qBot   = centerWcs + new Vector3d(0, -r, 0);
+                            AddPointIfInsideClip(qRight, clipBox, finalTransform, validPoints);
+                            AddPointIfInsideClip(qLeft,  clipBox, finalTransform, validPoints);
+                            AddPointIfInsideClip(qTop,   clipBox, finalTransform, validPoints);
+                            AddPointIfInsideClip(qBot,   clipBox, finalTransform, validPoints);
+
+                            // Thu thập Circle - kiểm tra bất kỳ phần nào nằm trong clip box
+                            if (IsInsideClip(centerWcs, clipBox) || IsInsideClip(qRight, clipBox) ||
+                                IsInsideClip(qLeft, clipBox) || IsInsideClip(qTop, clipBox) || IsInsideClip(qBot, clipBox))
+                            {
+                                Circle clonedCircle = circle.Clone() as Circle;
+                                clonedCircle.TransformBy(matrix * finalTransform);
+                                validCircles.Add(clonedCircle);
+                            }
                         }
                         else if (entity is Arc arc)
                         {
+                            Point3d startWcs = arc.StartPoint.TransformBy(matrix);
+                            Point3d endWcs = arc.EndPoint.TransformBy(matrix);
                             Point3d midPointWcs = arc.GetPointAtParameter(arc.StartParam + (arc.EndParam - arc.StartParam) / 2.0).TransformBy(matrix);
-                            if (IsInsideClip(midPointWcs, clipBox))
+                            // Chấp nhận nếu bất kỳ điểm nào (start, mid, end) nằm trong clip box
+                            if (IsInsideClip(midPointWcs, clipBox) || IsInsideClip(startWcs, clipBox) || IsInsideClip(endWcs, clipBox))
                             {
                                 Arc clonedArc = arc.Clone() as Arc;
                                 clonedArc.TransformBy(matrix * finalTransform);
                                 validArcs.Add(clonedArc);
+                            }
+                            // Start/End points cho linear dim
+                            AddPointIfInsideClip(startWcs, clipBox, finalTransform, validPoints);
+                            AddPointIfInsideClip(endWcs, clipBox, finalTransform, validPoints);
+                        }
+                        else if (entity is Ellipse ellipse)
+                        {
+                            // Lấy bounding box quadrant points của Ellipse cho linear dim
+                            Point3d centerWcs = ellipse.Center.TransformBy(matrix);
+                            if (IsInsideClip(centerWcs, clipBox))
+                            {
+                                try
+                                {
+                                    Extents3d ellipseExtents = ellipse.GeometricExtents;
+                                    Point3d eMin = ellipseExtents.MinPoint.TransformBy(matrix);
+                                    Point3d eMax = ellipseExtents.MaxPoint.TransformBy(matrix);
+                                    AddPointIfInsideClip(new Point3d(eMin.X, centerWcs.Y, 0), clipBox, finalTransform, validPoints);
+                                    AddPointIfInsideClip(new Point3d(eMax.X, centerWcs.Y, 0), clipBox, finalTransform, validPoints);
+                                    AddPointIfInsideClip(new Point3d(centerWcs.X, eMin.Y, 0), clipBox, finalTransform, validPoints);
+                                    AddPointIfInsideClip(new Point3d(centerWcs.X, eMax.Y, 0), clipBox, finalTransform, validPoints);
+                                }
+                                catch { /* Bỏ qua Ellipse lỗi bounds */ }
                             }
                         }
                     }
@@ -522,13 +588,18 @@ namespace Callout.Logic
         {
             List<Point3d> validPoints = new List<Point3d>();
             List<Arc> validArcs = new List<Arc>();
+            List<Circle> validCircles = new List<Circle>();
             ObjectIdCollection backgroundObjectIds = new ObjectIdCollection();
             double extraBottomOffset = 0.0;
 
             try
             {
                 Extents3d clipBox = boundaryCurve.GeometricExtents;
-                ExtractGeometryRecursive(sourceBlock.BlockTableRecord, sourceBlock.BlockTransform, clipBox, finalTransform, validPoints, validArcs, transaction);
+                ExtractGeometryRecursive(sourceBlock.BlockTableRecord, sourceBlock.BlockTransform, clipBox, finalTransform, validPoints, validArcs, validCircles, transaction);
+
+                // Debug output
+                var ed = Application.DocumentManager.MdiActiveDocument?.Editor;
+                ed?.WriteMessage($"\n[CT Debug] Points={validPoints.Count}, Arcs={validArcs.Count}, Circles={validCircles.Count}");
 
                 Extents3d finalBoundaryExtents;
                 using (Curve clonedBoundary = boundaryCurve.Clone() as Curve)
@@ -549,22 +620,93 @@ namespace Callout.Logic
                 double secondLayerOffset = firstLayerOffset + (6.0 * dimensionScale);
                 double dimensionLinearFactor = 1.0 / calloutScale;
 
-                foreach (Arc validArc in validArcs)
+                // === DIM CUNG TRÒN (Arc): AlignedDimension với text "R<>" ===
+                var arcGroups = GroupByRadius(validArcs.Select(a => new RadiusItem { Radius = a.Radius, Entity = a }), dimensionScale);
+                foreach (var group in arcGroups)
                 {
-                    Point3d midPoint = validArc.GetPointAtParameter(validArc.StartParam + (validArc.EndParam - validArc.StartParam) / 2.0);
-                    Vector3d directionToMid = validArc.Center.GetVectorTo(midPoint).GetNormal();
-                    Point3d targetArcPoint = validArc.Center + directionToMid * (validArc.Radius + firstLayerOffset);
+                    Arc representative = (Arc)group.First().Entity;
+                    int count = group.Count;
 
-                    using (ArcDimension arcDimension = new ArcDimension(
-                        validArc.Center, validArc.StartPoint, validArc.EndPoint, targetArcPoint, "", dimensionStyleId))
+                    try
                     {
-                        arcDimension.LayerId = dimensionLayerId;
-                        arcDimension.SetDatabaseDefaults();
-                        arcDimension.Dimlfac = dimensionLinearFactor;
-                        CalloutHelpers.SetFixedExtensionLine(arcDimension, 6.0);
+                        // Tính điểm trên cung ở giữa
+                        double midAngle = representative.StartAngle + (representative.TotalAngle / 2.0);
+                        Point3d pointOnArc = new Point3d(
+                            representative.Center.X + representative.Radius * Math.Cos(midAngle),
+                            representative.Center.Y + representative.Radius * Math.Sin(midAngle), 0);
 
-                        currentSpace.AppendEntity(arcDimension);
-                        transaction.AddNewlyCreatedDBObject(arcDimension, true);
+                        // Vị trí dim line: offset ra ngoài theo hướng midAngle
+                        Vector3d outDir = new Vector3d(Math.Cos(midAngle), Math.Sin(midAngle), 0);
+                        Point3d dimLinePoint = pointOnArc + outDir * (firstLayerOffset * 0.4);
+
+                        string dimText = count > 1 ? $"{count}x R<>" : "R<>";
+
+                        using (AlignedDimension arcDim = new AlignedDimension())
+                        {
+                            arcDim.SetDatabaseDefaults();
+                            arcDim.XLine1Point = representative.Center;
+                            arcDim.XLine2Point = pointOnArc;
+                            arcDim.DimLinePoint = dimLinePoint;
+                            arcDim.DimensionStyle = dimensionStyleId;
+                            arcDim.Dimlfac = dimensionLinearFactor;
+                            arcDim.DimensionText = dimText;
+                            arcDim.LayerId = dimensionLayerId;
+                            CalloutHelpers.SetFixedExtensionLine(arcDim, 6.0);
+
+                            currentSpace.AppendEntity(arcDim);
+                            transaction.AddNewlyCreatedDBObject(arcDim, true);
+                        }
+                    }
+                    catch (System.Exception ex)
+                    {
+                        ed?.WriteMessage($"\n[CT] Arc dim error: {ex.Message}");
+                    }
+                }
+
+                // === DIM ĐƯỜNG TRÒN (Circle): AlignedDimension với text "%%C<>" ===
+                var circleGroups = GroupByRadius(validCircles.Select(c => new RadiusItem { Radius = c.Radius, Entity = c }), dimensionScale);
+                int circleGroupIndex = 0;
+                foreach (var group in circleGroups)
+                {
+                    Circle representative = (Circle)group.First().Entity;
+                    int count = group.Count;
+
+                    try
+                    {
+                        double angle = (Math.PI / 4.0) + (circleGroupIndex * Math.PI / 6.0);
+                        Point3d pointOnCircle = new Point3d(
+                            representative.Center.X + representative.Radius * Math.Cos(angle),
+                            representative.Center.Y + representative.Radius * Math.Sin(angle), 0);
+                        Point3d oppositePoint = new Point3d(
+                            representative.Center.X - representative.Radius * Math.Cos(angle),
+                            representative.Center.Y - representative.Radius * Math.Sin(angle), 0);
+
+                        Vector3d outDir = new Vector3d(Math.Cos(angle), Math.Sin(angle), 0);
+                        Point3d dimLinePoint = pointOnCircle + outDir * (firstLayerOffset * 0.3);
+
+                        // %%C = ký hiệu đường kính (⌀), Dimlfac * 2 vì dim đo bán kính nhưng hiển thị đường kính
+                        string dimText = count > 1 ? $"{count}x %%C<>" : "%%C<>";
+
+                        using (AlignedDimension circleDim = new AlignedDimension())
+                        {
+                            circleDim.SetDatabaseDefaults();
+                            circleDim.XLine1Point = oppositePoint;
+                            circleDim.XLine2Point = pointOnCircle;
+                            circleDim.DimLinePoint = dimLinePoint;
+                            circleDim.DimensionStyle = dimensionStyleId;
+                            circleDim.Dimlfac = dimensionLinearFactor;
+                            circleDim.DimensionText = dimText;
+                            circleDim.LayerId = dimensionLayerId;
+                            CalloutHelpers.SetFixedExtensionLine(circleDim, 6.0);
+
+                            currentSpace.AppendEntity(circleDim);
+                            transaction.AddNewlyCreatedDBObject(circleDim, true);
+                        }
+                        circleGroupIndex++;
+                    }
+                    catch (System.Exception ex)
+                    {
+                        ed?.WriteMessage($"\n[CT] Circle dim error: {ex.Message}");
                     }
                 }
 
@@ -575,27 +717,9 @@ namespace Callout.Logic
 
                 double minDimDist = 5.0 * dimensionScale;
 
-                List<double> filteredX = new List<double>();
-                if (distinctX.Count > 0)
-                {
-                    filteredX.Add(distinctX.First());
-                    for (int i = 1; i < distinctX.Count; i++)
-                    {
-                        if (distinctX[i] - filteredX.Last() >= minDimDist) filteredX.Add(distinctX[i]);
-                    }
-                }
-                distinctX = filteredX;
-
-                List<double> filteredY = new List<double>();
-                if (distinctY.Count > 0)
-                {
-                    filteredY.Add(distinctY.First());
-                    for (int i = 1; i < distinctY.Count; i++)
-                    {
-                        if (distinctY[i] - filteredY.Last() >= minDimDist) filteredY.Add(distinctY[i]);
-                    }
-                }
-                distinctY = filteredY;
+                // Lọc thông minh: luôn giữ điểm đầu + cuối, bỏ các điểm quá gần nhau ở giữa
+                distinctX = FilterDimPoints(distinctX, minDimDist);
+                distinctY = FilterDimPoints(distinctY, minDimDist);
 
                 if (!isPlaceTop)
                 {
@@ -723,14 +847,149 @@ namespace Callout.Logic
                 {
                     if (arc != null && !arc.IsDisposed) arc.Dispose();
                 }
+                foreach (var circle in validCircles)
+                {
+                    if (circle != null && !circle.IsDisposed) circle.Dispose();
+                }
             }
             
             return extraBottomOffset;
         }
 
+        /// <summary>
+        /// Tách các arc segment từ Polyline có bulge (cung tròn trong polyline).
+        /// Bulge != 0 nghĩa là đoạn đó là cung tròn, cần tạo Arc để dim bán kính.
+        /// </summary>
+        private static void ExtractArcsFromPolyline(Polyline polyline, Matrix3d matrix, Extents3d clipBox, Matrix3d finalTransform, List<Arc> validArcs)
+        {
+            int vertexCount = polyline.NumberOfVertices;
+            int segCount = polyline.Closed ? vertexCount : vertexCount - 1;
+
+            for (int i = 0; i < segCount; i++)
+            {
+                double bulge = polyline.GetBulgeAt(i);
+                if (System.Math.Abs(bulge) < 1e-6) continue; // Không phải cung tròn
+
+                SegmentType segType = polyline.GetSegmentType(i);
+                if (segType != SegmentType.Arc) continue;
+
+                try
+                {
+                    CircularArc2d arcSeg = polyline.GetArcSegment2dAt(i);
+                    Point2d center2d = arcSeg.Center;
+                    double radius = arcSeg.Radius;
+
+                    Point2d startPt2d = polyline.GetPoint2dAt(i);
+                    Point2d endPt2d = polyline.GetPoint2dAt((i + 1) % vertexCount);
+
+                    Point3d startPt = new Point3d(startPt2d.X, startPt2d.Y, 0);
+                    Point3d endPt = new Point3d(endPt2d.X, endPt2d.Y, 0);
+                    Point3d center = new Point3d(center2d.X, center2d.Y, 0);
+
+                    double startAngle = System.Math.Atan2(startPt.Y - center.Y, startPt.X - center.X);
+                    double endAngle = System.Math.Atan2(endPt.Y - center.Y, endPt.X - center.X);
+
+                    // Bulge > 0: CCW, Bulge < 0: CW → đảo start/end
+                    if (bulge < 0)
+                    {
+                        double temp = startAngle;
+                        startAngle = endAngle;
+                        endAngle = temp;
+                    }
+
+                    // Normalize angles to [0, 2π)
+                    if (startAngle < 0) startAngle += 2.0 * System.Math.PI;
+                    if (endAngle < 0) endAngle += 2.0 * System.Math.PI;
+                    if (endAngle <= startAngle) endAngle += 2.0 * System.Math.PI;
+
+                    Arc arc = new Arc(center, radius, startAngle, endAngle);
+                    arc.SetDatabaseDefaults();
+
+                    // Kiểm tra midpoint có nằm trong clip box
+                    Point3d midWcs = arc.GetPointAtParameter(arc.StartParam + (arc.EndParam - arc.StartParam) / 2.0).TransformBy(matrix);
+                    if (IsInsideClip(midWcs, clipBox))
+                    {
+                        arc.TransformBy(matrix * finalTransform);
+                        validArcs.Add(arc);
+                    }
+                    else
+                    {
+                        arc.Dispose();
+                    }
+                }
+                catch
+                {
+                    // Bỏ qua segment lỗi, không crash
+                }
+            }
+        }
+
         // ==========================================
         // CÁC HÀM HELPER ĐỘC LẬP
         // ==========================================
+
+        /// <summary>
+        /// Data class để nhóm Circle/Arc theo bán kính.
+        /// </summary>
+        private class RadiusItem
+        {
+            public double Radius { get; set; }
+            public DBObject Entity { get; set; }
+        }
+
+        /// <summary>
+        /// Nhóm các Circle/Arc cùng bán kính (sai số 0.5 * dimScale).
+        /// Trả về các nhóm, mỗi nhóm chỉ cần dim 1 đại diện kèm số lượng.
+        /// </summary>
+        private static List<List<RadiusItem>> GroupByRadius(IEnumerable<RadiusItem> items, double dimScale)
+        {
+            double tolerance = 0.5 * dimScale;
+            var sorted = items.OrderBy(i => i.Radius).ToList();
+            var groups = new List<List<RadiusItem>>();
+
+            foreach (var item in sorted)
+            {
+                bool added = false;
+                foreach (var group in groups)
+                {
+                    if (Math.Abs(group[0].Radius - item.Radius) <= tolerance)
+                    {
+                        group.Add(item);
+                        added = true;
+                        break;
+                    }
+                }
+                if (!added) groups.Add(new List<RadiusItem> { item });
+            }
+            return groups;
+        }
+
+        /// <summary>
+        /// Lọc điểm dim thông minh: luôn giữ first + last, merge các điểm quá gần nhau ở giữa.
+        /// </summary>
+        private static List<double> FilterDimPoints(List<double> sortedPoints, double minDist)
+        {
+            if (sortedPoints.Count <= 2) return sortedPoints;
+
+            var result = new List<double> { sortedPoints.First() };
+            double lastVal = sortedPoints.Last();
+
+            for (int i = 1; i < sortedPoints.Count - 1; i++)
+            {
+                // Giữ điểm nếu đủ xa điểm trước VÀ đủ xa điểm cuối
+                if (sortedPoints[i] - result.Last() >= minDist && lastVal - sortedPoints[i] >= minDist)
+                {
+                    result.Add(sortedPoints[i]);
+                }
+            }
+
+            // Luôn giữ điểm cuối
+            if (Math.Abs(result.Last() - lastVal) > 0.01)
+            {
+                result.Add(lastVal);
+            }
+            return result;
+        }
 
         private static bool IsInsideClip(Point3d pointWcs, Extents3d clipBox)
         {
