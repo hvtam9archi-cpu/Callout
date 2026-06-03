@@ -25,6 +25,26 @@ namespace Callout.Logic
 
         private static Callout.UI.CalloutManagerWindow _managerWindow = null;
 
+        // Cleanup disposed Database entries khi bản vẽ đóng — tránh memory leak static dict
+        static CalloutCoreLogic()
+        {
+            try
+            {
+                Application.DocumentManager.DocumentDestroyed += (s, e) =>
+                {
+                    var keysToRemove = new List<Database>();
+                    foreach (var key in _blockCalloutBubbles.Keys)
+                    {
+                        if (key.IsDisposed)
+                            keysToRemove.Add(key);
+                    }
+                    foreach (var key in keysToRemove)
+                        _blockCalloutBubbles.Remove(key);
+                };
+            }
+            catch { /* Im lặng nếu DocumentManager chưa sẵn sàng */ }
+        }
+
         public static Dictionary<ObjectId, List<CalloutBubblePair>> GetCalloutMappings(Database db)
         {
             if (db == null) return new Dictionary<ObjectId, List<CalloutBubblePair>>();
@@ -60,7 +80,7 @@ namespace Callout.Logic
         {
             try
             {
-                if (_managerWindow == null)
+                if (_managerWindow == null || !_managerWindow.IsLoaded)
                 {
                     _managerWindow = new Callout.UI.CalloutManagerWindow();
                     _managerWindow.Closed += (s, e) => _managerWindow = null;
@@ -90,6 +110,7 @@ namespace Callout.Logic
             Editor editor = document.Editor;
 
             // NGUYÊN TẮC: Crash-proof Safety (Global try-catch tại Entry Point)
+            UndoHelper.Begin(document);
             try
             {
                 // 1. NGẮT LIÊN KẾT VỚI TRANSACTION: HỏI UI NGAY TỪ ĐẦU
@@ -453,6 +474,10 @@ namespace Callout.Logic
             {
                 // NGUYÊN TẮC: Ghi lỗi trực quan, triệt để thay vì im lặng
                 editor.WriteMessage($"\n[ERROR Lỗi Hệ Thống]: {ex.Message}\nStackTrace: {ex.StackTrace}");
+            }
+            finally
+            {
+                UndoHelper.End(document);
             }
         }
 
