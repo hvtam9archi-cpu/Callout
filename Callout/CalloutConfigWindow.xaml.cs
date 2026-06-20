@@ -48,52 +48,62 @@ namespace Callout.UI
         {
             var doc = Application.DocumentManager.MdiActiveDocument;
             var ed = doc.Editor;
-            
+
             this.Hide();
 
-            PromptEntityOptions peo = new PromptEntityOptions("\nChọn Block Attribute làm Block Khung: ");
-            peo.SetRejectMessage("\nChỉ chọn BlockReference!");
-            peo.AddAllowedClass(typeof(BlockReference), true);
-
-            var res = ed.GetEntity(peo);
-            if (res.Status == PromptStatus.OK)
+            try
             {
-                using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
-                {
-                    BlockReference blk = tr.GetObject(res.ObjectId, OpenMode.ForRead) as BlockReference;
-                    if (blk != null)
-                    {
-                        string bName = blk.IsDynamicBlock ? ((BlockTableRecord)tr.GetObject(blk.DynamicBlockTableRecord, OpenMode.ForRead)).Name : blk.Name;
-                        TxtBlockName.Text = bName;
+                PromptEntityOptions peo = new PromptEntityOptions("\nChọn Block Attribute làm Block Khung: ");
+                peo.SetRejectMessage("\nChỉ chọn BlockReference!");
+                peo.AddAllowedClass(typeof(BlockReference), true);
 
-                        CbxAttributes.Items.Clear();
-                        CbxScaleAttributes.Items.Clear();
-                        foreach (ObjectId attId in blk.AttributeCollection)
+                var res = ed.GetEntity(peo);
+                if (res.Status == PromptStatus.OK)
+                {
+                    using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
+                    {
+                        BlockReference blk = tr.GetObject(res.ObjectId, OpenMode.ForRead) as BlockReference;
+                        if (blk != null)
                         {
-                            if (attId.IsErased) continue;
-                            AttributeReference attRef = tr.GetObject(attId, OpenMode.ForRead) as AttributeReference;
-                            if (attRef != null)
+                            string bName = blk.IsDynamicBlock ? ((BlockTableRecord)tr.GetObject(blk.DynamicBlockTableRecord, OpenMode.ForRead)).Name : blk.Name;
+                            TxtBlockName.Text = bName;
+
+                            CbxAttributes.Items.Clear();
+                            CbxScaleAttributes.Items.Clear();
+                            foreach (ObjectId attId in blk.AttributeCollection)
                             {
-                                CbxAttributes.Items.Add(attRef.Tag);
-                                CbxScaleAttributes.Items.Add(attRef.Tag);
+                                if (attId.IsErased) continue;
+                                AttributeReference attRef = tr.GetObject(attId, OpenMode.ForRead) as AttributeReference;
+                                if (attRef != null)
+                                {
+                                    CbxAttributes.Items.Add(attRef.Tag);
+                                    CbxScaleAttributes.Items.Add(attRef.Tag);
+                                }
+                            }
+
+                            if (CbxAttributes.Items.Count > 0)
+                            {
+                                CbxAttributes.SelectedIndex = 0;
+                                CbxScaleAttributes.SelectedIndex = 0;
+                            }
+                            else
+                            {
+                                MessageBox.Show("Block được chọn không có Attribute nào!", "Cảnh báo", MessageBoxButton.OK, MessageBoxImage.Warning);
                             }
                         }
-
-                        if (CbxAttributes.Items.Count > 0)
-                        {
-                            CbxAttributes.SelectedIndex = 0;
-                            CbxScaleAttributes.SelectedIndex = 0;
-                        }
-                        else
-                        {
-                            MessageBox.Show("Block được chọn không có Attribute nào!", "Cảnh báo", MessageBoxButton.OK, MessageBoxImage.Warning);
-                        }
+                        tr.Commit();
                     }
-                    tr.Commit();
                 }
             }
-
-            this.ShowDialog();
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\n[ERROR Chọn Block]: {ex.Message}");
+            }
+            finally
+            {
+                // Đảm bảo cửa sổ luôn hiện lại, kể cả khi có Exception
+                this.Visibility = System.Windows.Visibility.Visible;
+            }
         }
 
         private void BtnSave_Click(object sender, RoutedEventArgs e)

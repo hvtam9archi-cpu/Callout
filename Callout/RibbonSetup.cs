@@ -164,6 +164,7 @@ namespace Callout
 
     /// <summary>
     /// Handler chung cho các nút Ribbon — thực thi lệnh AutoCAD.
+    /// CommandParameter được set là string (tên lệnh như "CT", "CT1").
     /// </summary>
     public class RibbonCommandHandler : System.Windows.Input.ICommand
     {
@@ -173,12 +174,13 @@ namespace Callout
 
         public void Execute(object parameter)
         {
-            if (parameter is RibbonButton button)
+            string commandName = parameter as string;
+            if (!string.IsNullOrEmpty(commandName))
             {
                 Document doc = Application.DocumentManager.MdiActiveDocument;
                 if (doc != null)
                 {
-                    doc.SendStringToExecute($"{button.CommandParameter} ", true, false, true);
+                    doc.SendStringToExecute($"{commandName} ", true, false, true);
                 }
             }
         }
