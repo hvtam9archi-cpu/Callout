@@ -1,7 +1,7 @@
 using Autodesk.AutoCAD.Runtime;
 using Callout.Logic;
 
-namespace Callout.Commands
+namespace Callout
 {
     public class CalloutCommand
     {

@@ -305,7 +305,6 @@ namespace Callout.Logic
                     using (DocumentLock docLock = document.LockDocument())
                     using (Transaction transaction = database.TransactionManager.StartTransaction())
                     {
-                        ObjectId backgroundLayerId = CalloutHelpers.EnsureLayer(database, transaction, "Nen", Color.FromRgb(150, 150, 150), "Continuous", LineWeight.LineWeight005);
                         ObjectId dimensionLayerId = CalloutHelpers.EnsureLayer(database, transaction, "ABC_A_Kichthuoc", Color.FromColorIndex(ColorMethod.ByAci, 8), "Continuous", LineWeight.LineWeight009);
 
                         using (BlockTableRecord currentSpace = (BlockTableRecord)transaction.GetObject(database.CurrentSpaceId, OpenMode.ForWrite))
@@ -389,7 +388,7 @@ namespace Callout.Logic
                                 double dimCollisionOffset = CreateAutoDimensionGeometry(
                                     originalSourceBlock, originalBoundaryCurve, mathTransform,
                                     currentSpace, dimensionStyleId, dimensionScale, calloutScale,
-                                    basePoint, finalPosition, backgroundLayerId, dimensionLayerId, transaction
+                                    basePoint, finalPosition, dimensionLayerId, transaction
                                 );
 
                                 if (isFarCallout)
@@ -609,12 +608,11 @@ namespace Callout.Logic
             }
         }
 
-        private static double CreateAutoDimensionGeometry(BlockReference sourceBlock, Curve boundaryCurve, Matrix3d finalTransform, BlockTableRecord currentSpace, ObjectId dimensionStyleId, double dimensionScale, double calloutScale, Point3d originalCenter, Point3d newCenter, ObjectId backgroundLayerId, ObjectId dimensionLayerId, Transaction transaction)
+        private static double CreateAutoDimensionGeometry(BlockReference sourceBlock, Curve boundaryCurve, Matrix3d finalTransform, BlockTableRecord currentSpace, ObjectId dimensionStyleId, double dimensionScale, double calloutScale, Point3d originalCenter, Point3d newCenter, ObjectId dimensionLayerId, Transaction transaction)
         {
             List<Point3d> validPoints = new List<Point3d>();
             List<Arc> validArcs = new List<Arc>();
             List<Circle> validCircles = new List<Circle>();
-            ObjectIdCollection backgroundObjectIds = new ObjectIdCollection();
             double extraBottomOffset = 0.0;
 
             try
@@ -754,17 +752,6 @@ namespace Callout.Logic
 
                 if (distinctX.Count > 1)
                 {
-                    foreach (double xValue in distinctX)
-                    {
-                        using (Line guideLine = new Line(new Point3d(xValue, finalBoundaryExtents.MinPoint.Y, 0), new Point3d(xValue, finalBoundaryExtents.MaxPoint.Y, 0)))
-                        {
-                            guideLine.LayerId = backgroundLayerId;
-                            currentSpace.AppendEntity(guideLine);
-                            transaction.AddNewlyCreatedDBObject(guideLine, true);
-                            backgroundObjectIds.Add(guideLine.ObjectId);
-                        }
-                    }
-
                     for (int i = 0; i < distinctX.Count - 1; i++)
                     {
                         using (RotatedDimension dimensionX = new RotatedDimension())
@@ -806,17 +793,6 @@ namespace Callout.Logic
 
                 if (distinctY.Count > 1)
                 {
-                    foreach (double yValue in distinctY)
-                    {
-                        using (Line guideLine = new Line(new Point3d(finalBoundaryExtents.MinPoint.X, yValue, 0), new Point3d(finalBoundaryExtents.MaxPoint.X, yValue, 0)))
-                        {
-                            guideLine.LayerId = backgroundLayerId;
-                            currentSpace.AppendEntity(guideLine);
-                            transaction.AddNewlyCreatedDBObject(guideLine, true);
-                            backgroundObjectIds.Add(guideLine.ObjectId);
-                        }
-                    }
-
                     for (int i = 0; i < distinctY.Count - 1; i++)
                     {
                         using (RotatedDimension dimensionY = new RotatedDimension())
@@ -856,14 +832,6 @@ namespace Callout.Logic
                     }
                 }
 
-                // Thực hiện MoveToBottom cho tất cả các Line nền
-                if (backgroundObjectIds.Count > 0)
-                {
-                    using (DrawOrderTable drawOrderTable = (DrawOrderTable)transaction.GetObject(currentSpace.DrawOrderTableId, OpenMode.ForWrite))
-                    {
-                        drawOrderTable.MoveToBottom(backgroundObjectIds);
-                    }
-                }
             }
             finally
             {

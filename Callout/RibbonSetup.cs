@@ -87,11 +87,17 @@ namespace Callout
 
                 RibbonPanelSource panelSource = new RibbonPanelSource { Title = "Chi tiết Trích", Id = panelId };
 
-                panelSource.Items.Add(CreateButton("CT", "Trích Chi Tiết", "Trích chi tiết gần (CT)", RibbonItemSize.Large));
-                panelSource.Items.Add(CreateButton("CT1", "Trích Xa", "Trích chi tiết xa (CT1)", RibbonItemSize.Large));
-                panelSource.Items.Add(new RibbonSeparator());
-                panelSource.Items.Add(CreateButton("CT2", "Cấu Hình", "Thiết lập Block Khung (CT2)", RibbonItemSize.Standard));
-                panelSource.Items.Add(CreateButton("CTS", "Quản Lý", "Quản lý chi tiết trích (CTS)", RibbonItemSize.Standard));
+                // Row 1: Trích Chi Tiết (CT) + Cấu Hình (CT2)
+                RibbonRow row1 = new RibbonRow();
+                row1.Items.Add(CreateButton("CT", "Trích Chi Tiết", "Trích chi tiết gần (CT)", RibbonItemSize.Standard));
+                row1.Items.Add(CreateButton("CT2", "Cấu Hình", "Thiết lập Block Khung (CT2)", RibbonItemSize.Standard));
+                panelSource.Items.Add(row1);
+
+                // Row 2: Trích Xa (CT1) + Quản Lý (CTS)
+                RibbonRow row2 = new RibbonRow();
+                row2.Items.Add(CreateButton("CT1", "Trích Xa", "Trích chi tiết xa (CT1)", RibbonItemSize.Standard));
+                row2.Items.Add(CreateButton("CTS", "Quản Lý", "Quản lý chi tiết trích (CTS)", RibbonItemSize.Standard));
+                panelSource.Items.Add(row2);
 
                 RibbonPanel panel = new RibbonPanel { Source = panelSource };
                 tab.Panels.Add(panel);
