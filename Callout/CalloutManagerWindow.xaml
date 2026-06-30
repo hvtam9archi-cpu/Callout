@@ -1,7 +1,7 @@
 <Window x:Class="Callout.UI.CalloutManagerWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Quản lý Chi tiết Trích (CTS)" Width="600" Height="500"
+        Title="Manage (CTS)" Width="600" Height="500"
         WindowStartupLocation="CenterScreen" ResizeMode="CanResizeWithGrip"
         WindowStyle="None" AllowsTransparency="True"
         Background="Transparent" Foreground="#E8EAED" FontFamily="Segoe UI">
@@ -129,10 +129,8 @@
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="14,0,0,0">
-                        <Border Width="22" Height="22" CornerRadius="4" Background="#2563EB" Margin="0,0,8,0">
-                            <TextBlock Text="C" Foreground="White" FontWeight="Bold" FontSize="12" FontFamily="Segoe UI" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <TextBlock Text="Quản lý Chi tiết Trích" FontSize="12" Foreground="#E8EAED" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <Image x:Name="TitleIcon" Width="22" Height="22" Margin="0,0,8,0"/>
+                        <TextBlock Text="Manage" FontSize="12" Foreground="#E8EAED" FontWeight="SemiBold" VerticalAlignment="Center"/>
                     </StackPanel>
                     <StackPanel Grid.Column="1" Orientation="Horizontal">
                         <Button Name="BtnMinimize" Content="─" Style="{StaticResource TitleBarBtn}" Click="BtnMinimize_Click" VerticalAlignment="Top" Height="40" Width="46"/>
@@ -148,7 +146,7 @@
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
-                <TextBlock Grid.Row="0" Text="CHI TIẾT TRÍCH" FontSize="12" FontWeight="Bold" Foreground="#2563EB" Margin="0,0,0,6"/>
+                <TextBlock Grid.Row="0" Text="DETAIL CALLOUTS" FontSize="12" FontWeight="Bold" Foreground="#2563EB" Margin="0,0,0,6"/>
                 <Border Grid.Row="1" Background="#2B2D32" CornerRadius="6" BorderBrush="#333640" BorderThickness="1" Padding="8">
                     <TreeView Name="MainTreeView" Background="Transparent" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                         <TreeView.ItemTemplate>

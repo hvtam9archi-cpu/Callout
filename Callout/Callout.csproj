@@ -34,6 +34,10 @@
     <Copy SourceFiles="@(ReferenceCopyLocalPaths)" DestinationFolder="$(BundlePath)" SkipUnchangedFiles="false" />
     <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(BundlePath)" SkipUnchangedFiles="false" />
     <Copy SourceFiles="$(ProjectDir)PackageContents.xml" DestinationFolder="$(AppData)\Autodesk\ApplicationPlugins\Callout.bundle" SkipUnchangedFiles="false" />
+    <ItemGroup>
+      <ResourceFiles Include="$(ProjectDir)Resource\*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(ResourceFiles)" DestinationFolder="$(BundlePath)\Resource" SkipUnchangedFiles="false" />
   </Target>
 
 </Project>

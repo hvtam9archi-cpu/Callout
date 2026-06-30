@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Markup;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.ApplicationServices;
@@ -48,6 +49,7 @@ namespace Callout.UI
 
             if (System.ComponentModel.DesignerProperties.GetIsInDesignMode(this)) return;
 
+            LoadTitleIcon("IconRibbon_CalloutManage_32px.ico");
             RefreshData();
             Application.DocumentManager.DocumentActivated += DocumentManager_DocumentActivated;
             this.Closed += (s, e) => Application.DocumentManager.DocumentActivated -= DocumentManager_DocumentActivated;
@@ -88,6 +90,30 @@ namespace Callout.UI
         private void BtnClose_Click(object sender, RoutedEventArgs e)
         {
             this.Close();
+        }
+
+        /// <summary>
+        /// Load icon từ thư mục Resource vào TitleBar.
+        /// </summary>
+        private void LoadTitleIcon(string fileName)
+        {
+            try
+            {
+                string assemblyDir = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+                string path = System.IO.Path.Combine(assemblyDir, "Resource", fileName);
+                if (System.IO.File.Exists(path))
+                {
+                    var bi = new BitmapImage();
+                    bi.BeginInit();
+                    bi.UriSource = new Uri(path, UriKind.Absolute);
+                    bi.DecodePixelWidth = 22;
+                    bi.DecodePixelHeight = 22;
+                    bi.CacheOption = BitmapCacheOption.OnLoad;
+                    bi.EndInit();
+                    TitleIcon.Source = bi;
+                }
+            }
+            catch { }
         }
 
         private void BtnRefresh_Click(object sender, RoutedEventArgs e)

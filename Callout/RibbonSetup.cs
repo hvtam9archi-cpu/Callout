@@ -81,23 +81,19 @@ namespace Callout
                 string panelId = "CALLOUT_PANEL";
                 foreach (RibbonPanel existingPanel in tab.Panels)
                 {
-                    if (existingPanel.Source.Id == panelId || existingPanel.Source.Title == "Chi tiết Trích")
+                    if (existingPanel.Source.Id == panelId || existingPanel.Source.Title == "Detail Callout" || existingPanel.Source.Title == "Chi tiết Trích")
                         return; // Panel đã tồn tại
                 }
 
-                RibbonPanelSource panelSource = new RibbonPanelSource { Title = "Chi tiết Trích", Id = panelId };
+                RibbonPanelSource panelSource = new RibbonPanelSource { Title = "Detail Callout", Id = panelId };
 
-                // Row 1: Trích Chi Tiết (CT) + Cấu Hình (CT2)
-                RibbonRow row1 = new RibbonRow();
-                row1.Items.Add(CreateButton("CT", "Trích Chi Tiết", "Trích chi tiết gần (CT)", RibbonItemSize.Standard));
-                row1.Items.Add(CreateButton("CT2", "Cấu Hình", "Thiết lập Block Khung (CT2)", RibbonItemSize.Standard));
-                panelSource.Items.Add(row1);
-
-                // Row 2: Trích Xa (CT1) + Quản Lý (CTS)
-                RibbonRow row2 = new RibbonRow();
-                row2.Items.Add(CreateButton("CT1", "Trích Xa", "Trích chi tiết xa (CT1)", RibbonItemSize.Standard));
-                row2.Items.Add(CreateButton("CTS", "Quản Lý", "Quản lý chi tiết trích (CTS)", RibbonItemSize.Standard));
-                panelSource.Items.Add(row2);
+                // Xếp 4 button song song trong 1 RibbonRowPanel — Large = icon trên + tên dưới
+                RibbonRowPanel rowPanel = new RibbonRowPanel();
+                rowPanel.Items.Add(CreateButton("CT", "Detail Callout", "Detail Callout (CT)", RibbonItemSize.Large, "IconRibbon_DetailCallout_32px.ico"));
+                rowPanel.Items.Add(CreateButton("CT1", "Detail Callout\nBubble", "Callout Bubble (CT1)", RibbonItemSize.Large, "IconRibbon_CalloutBubble_32px.ico"));
+                rowPanel.Items.Add(CreateButton("CTS", "Manage\nCallout", "Manage (CTS)", RibbonItemSize.Large, "IconRibbon_CalloutManage_32px.ico"));
+                rowPanel.Items.Add(CreateButton("CT2", "Setting\nCallout", "Settings (CT2)", RibbonItemSize.Large, "IconRibbon_SettingsCallout_32px.ico"));
+                panelSource.Items.Add(rowPanel);
 
                 RibbonPanel panel = new RibbonPanel { Source = panelSource };
                 tab.Panels.Add(panel);
@@ -111,23 +107,46 @@ namespace Callout
             }
         }
 
-        private RibbonButton CreateButton(string commandName, string text, string tooltip, RibbonItemSize size)
+        private RibbonButton CreateButton(string commandName, string text, string tooltip, RibbonItemSize size, string iconFileName = null)
         {
-            // Trích xuất các chữ cái đầu tiên làm icon text
-            string iconText = commandName.Length <= 3 ? commandName : commandName.Substring(0, 2);
-
             return new RibbonButton
             {
                 Text = text,
                 ShowText = true,
                 ShowImage = true,
-                Image = GetIcon(iconText, 16),
-                LargeImage = GetIcon(iconText, 32),
+                Image = string.IsNullOrEmpty(iconFileName) ? GetIcon(commandName, 16) : LoadIcon(iconFileName, 16),
+                LargeImage = string.IsNullOrEmpty(iconFileName) ? GetIcon(commandName, 32) : LoadIcon(iconFileName, 32),
                 CommandParameter = commandName,
                 CommandHandler = new RibbonCommandHandler(),
                 Size = size,
+                Orientation = System.Windows.Controls.Orientation.Vertical,
                 ToolTip = tooltip
             };
+        }
+
+        /// <summary>
+        /// Load icon từ thư mục Resource (cạnh assembly), decode đúng kích thước để tránh crop.
+        /// </summary>
+        private System.Windows.Media.ImageSource LoadIcon(string fileName, int decodeSize = 32)
+        {
+            try
+            {
+                string assemblyDir = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+                string path = System.IO.Path.Combine(assemblyDir, "Resource", fileName);
+                if (System.IO.File.Exists(path))
+                {
+                    var bi = new System.Windows.Media.Imaging.BitmapImage();
+                    bi.BeginInit();
+                    bi.UriSource = new Uri(path, UriKind.Absolute);
+                    bi.DecodePixelWidth = decodeSize;
+                    bi.DecodePixelHeight = decodeSize;
+                    bi.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                    bi.EndInit();
+                    return bi;
+                }
+            }
+            catch { }
+            return null;
         }
 
         private System.Windows.Media.ImageSource GetIcon(string text, int size)
@@ -174,19 +193,30 @@ namespace Callout
     /// </summary>
     public class RibbonCommandHandler : System.Windows.Input.ICommand
     {
-        public event EventHandler CanExecuteChanged;
+        public event EventHandler CanExecuteChanged { add { } remove { } }
 
         public bool CanExecute(object parameter) => true;
 
         public void Execute(object parameter)
         {
-            string commandName = parameter as string;
+            // AutoCAD có thể truyền CommandParameter (string) hoặc chính RibbonButton
+            string commandName = null;
+            if (parameter is RibbonButton button)
+                commandName = button.CommandParameter as string;
+            else if (parameter is string str)
+                commandName = str;
+
             if (!string.IsNullOrEmpty(commandName))
             {
                 Document doc = Application.DocumentManager.MdiActiveDocument;
                 if (doc != null)
                 {
-                    doc.SendStringToExecute($"{commandName} ", true, false, true);
+                    string cleanCmd = commandName.Replace("\x03", "").Trim();
+                    if (!string.IsNullOrEmpty(cleanCmd))
+                    {
+                        doc.SendStringToExecute("\x1B\x1B", true, false, false);
+                        doc.SendStringToExecute(cleanCmd + "\n", true, false, false);
+                    }
                 }
             }
         }

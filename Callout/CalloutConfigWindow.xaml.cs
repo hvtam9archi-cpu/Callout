@@ -2,6 +2,7 @@ using System;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Markup;
+using System.Windows.Media.Imaging;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.DatabaseServices;
 using Application = Autodesk.AutoCAD.ApplicationServices.Core.Application;
@@ -16,6 +17,7 @@ namespace Callout.UI
             
             if (System.ComponentModel.DesignerProperties.GetIsInDesignMode(this)) return;
 
+            LoadTitleIcon("IconRibbon_SettingsCallout_32px.ico");
             TxtBlockName.Text = Callout.Services.CalloutConfig.TitleBlockName;
             
             if (!string.IsNullOrEmpty(Callout.Services.CalloutConfig.SheetNumberTag))
@@ -104,6 +106,30 @@ namespace Callout.UI
                 // Đảm bảo cửa sổ luôn hiện lại, kể cả khi có Exception
                 this.Visibility = System.Windows.Visibility.Visible;
             }
+        }
+
+        /// <summary>
+        /// Load icon từ thư mục Resource vào TitleBar.
+        /// </summary>
+        private void LoadTitleIcon(string fileName)
+        {
+            try
+            {
+                string assemblyDir = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+                string path = System.IO.Path.Combine(assemblyDir, "Resource", fileName);
+                if (System.IO.File.Exists(path))
+                {
+                    var bi = new BitmapImage();
+                    bi.BeginInit();
+                    bi.UriSource = new Uri(path, UriKind.Absolute);
+                    bi.DecodePixelWidth = 22;
+                    bi.DecodePixelHeight = 22;
+                    bi.CacheOption = BitmapCacheOption.OnLoad;
+                    bi.EndInit();
+                    TitleIcon.Source = bi;
+                }
+            }
+            catch { }
         }
 
         private void BtnSave_Click(object sender, RoutedEventArgs e)
