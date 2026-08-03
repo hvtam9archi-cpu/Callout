@@ -28,5 +28,11 @@ namespace Callout
         {
             CalloutCoreLogic.ShowCalloutStatus();
         }
+
+        [CommandMethod("CTFIXCROP", CommandFlags.Modal)]
+        public void RepairCalloutCrops()
+        {
+            CalloutCoreLogic.RepairCalloutCrops();
+        }
     }
 }

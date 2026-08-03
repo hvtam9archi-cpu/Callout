@@ -21,6 +21,9 @@ namespace Callout.Logic
 
     public static class CalloutCoreLogic
     {
+        private const string FilterDictionaryName = "ACAD_FILTER";
+        private const string SpatialFilterName = "SPATIAL";
+
         private static readonly Dictionary<Database, Dictionary<ObjectId, List<CalloutBubblePair>>> _blockCalloutBubbles = new Dictionary<Database, Dictionary<ObjectId, List<CalloutBubblePair>>>();
 
         private static Callout.UI.CalloutManagerWindow _managerWindow = null;
@@ -103,11 +106,61 @@ namespace Callout.Logic
             ExecuteCallout(true);
         }
 
+        public static void RepairCalloutCrops()
+        {
+            Document document = Application.DocumentManager.MdiActiveDocument;
+            if (document == null) return;
+
+            int spatialFilterCount = 0;
+            int repairedFilterCount = 0;
+
+            try
+            {
+                using (DocumentLock documentLock = document.LockDocument())
+                using (Transaction transaction = document.Database.TransactionManager.StartTransaction())
+                {
+                    BlockTable blockTable = transaction.GetObject(document.Database.BlockTableId, OpenMode.ForRead) as BlockTable;
+                    foreach (ObjectId blockRecordId in blockTable)
+                    {
+                        BlockTableRecord blockRecord = transaction.GetObject(blockRecordId, OpenMode.ForRead) as BlockTableRecord;
+                        if (blockRecord == null || blockRecord.IsFromExternalReference) continue;
+
+                        foreach (ObjectId entityId in blockRecord)
+                        {
+                            if (entityId.IsErased) continue;
+
+                            BlockReference blockReference = transaction.GetObject(entityId, OpenMode.ForRead, false, true) as BlockReference;
+                            if (blockReference == null) continue;
+
+                            if (EnsureSpatialFilterCloneable(transaction, blockReference, out bool changed))
+                            {
+                                spatialFilterCount++;
+                                if (changed) repairedFilterCount++;
+                            }
+                        }
+                    }
+
+                    transaction.Commit();
+                }
+
+                document.Editor.WriteMessage(
+                    $"\n[Callout] Crop repair complete: {repairedFilterCount}/{spatialFilterCount} spatial filters updated for cross-drawing copy.");
+            }
+            catch (System.Exception ex)
+            {
+                document.Editor.WriteMessage($"\n[Callout] Crop repair failed: {ex.Message}");
+            }
+        }
+
         public static void ExecuteCallout(bool isFarCallout)
         {
             Document document = Application.DocumentManager.MdiActiveDocument;
+            if (document == null) return;
+
             Database database = document.Database;
             Editor editor = document.Editor;
+            ObjectId detailContentBlockId = ObjectId.Null;
+            bool calloutInserted = false;
 
             // NGUYÊN TẮC: Crash-proof Safety (Global try-catch tại Entry Point)
             UndoHelper.Begin(document);
@@ -134,7 +187,6 @@ namespace Callout.Logic
                 ObjectId _newTitleBubbleId = ObjectId.Null;
                 ObjectId _newSourceBubbleId = ObjectId.Null;
 
-                ObjectId detailContentBlockId = ObjectId.Null;
                 ObjectId sourceLayerId = ObjectId.Null;
                 Extents3d originalExtents = new Extents3d();
                 Point3d basePoint = Point3d.Origin;
@@ -250,10 +302,17 @@ namespace Callout.Logic
                     if (jigResult.Status != PromptStatus.OK) return;
 
                     Point3d finalPosition = calloutJig.CurrentPosition;
-                    double? detailAutoScale = null;
+                    double? detailAutoScale;
+                    double? sourceAutoScale;
                     using (Transaction tr2 = database.TransactionManager.StartTransaction())
                     {
-                        detailAutoScale = CalloutHelpers.GetScaleFromTitleBlockAtPosition(database, tr2, finalPosition);
+                        double?[] detectedScales = CalloutHelpers.GetScalesFromTitleBlocksAtPositions(
+                            database,
+                            tr2,
+                            finalPosition,
+                            basePoint);
+                        detailAutoScale = detectedScales[0];
+                        sourceAutoScale = detectedScales[1];
                         tr2.Commit();
                     }
 
@@ -279,13 +338,6 @@ namespace Callout.Logic
                         detailDimensionScale = promptDimScaleResult.Value;
                     }
 
-                    double? sourceAutoScale = null;
-                    using (Transaction tr3 = database.TransactionManager.StartTransaction())
-                    {
-                        sourceAutoScale = CalloutHelpers.GetScaleFromTitleBlockAtPosition(database, tr3, basePoint);
-                        tr3.Commit();
-                    }
-                    
                     double sourceDimensionScale = sourceAutoScale ?? detailDimensionScale;
                     if (sourceAutoScale.HasValue) 
                     {
@@ -458,6 +510,7 @@ namespace Callout.Logic
                             }
                         }
                         transaction.Commit();
+                        calloutInserted = true;
                     }
 
                     if (isFarCallout && !_newTitleBubbleId.IsNull && !_newSourceBubbleId.IsNull)
@@ -476,7 +529,34 @@ namespace Callout.Logic
             }
             finally
             {
+                if (!calloutInserted)
+                {
+                    EraseUnusedDetailBlock(document, detailContentBlockId);
+                }
                 UndoHelper.End(document);
+            }
+        }
+
+        private static void EraseUnusedDetailBlock(Document document, ObjectId blockRecordId)
+        {
+            if (blockRecordId.IsNull || !blockRecordId.IsValid || blockRecordId.IsErased) return;
+
+            try
+            {
+                using (DocumentLock documentLock = document.LockDocument())
+                using (Transaction transaction = document.Database.TransactionManager.StartTransaction())
+                {
+                    BlockTableRecord blockRecord = transaction.GetObject(blockRecordId, OpenMode.ForWrite, false, true) as BlockTableRecord;
+                    if (blockRecord != null && !blockRecord.IsErased && blockRecord.GetBlockReferenceIds(true, false).Count == 0)
+                    {
+                        blockRecord.Erase();
+                    }
+                    transaction.Commit();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                document.Editor.WriteMessage($"\n[Callout] Could not clean up unused detail block: {ex.Message}");
             }
         }
 
@@ -998,14 +1078,52 @@ namespace Callout.Logic
             }
         }
 
+        private static bool EnsureSpatialFilterCloneable(Transaction transaction, BlockReference blockReference, out bool changed)
+        {
+            changed = false;
+            if (blockReference.ExtensionDictionary.IsNull) return false;
+
+            DBDictionary extensionDictionary = transaction.GetObject(
+                blockReference.ExtensionDictionary,
+                OpenMode.ForRead,
+                false,
+                true) as DBDictionary;
+            if (extensionDictionary == null || !extensionDictionary.Contains(FilterDictionaryName)) return false;
+
+            DBDictionary filterDictionary = transaction.GetObject(
+                extensionDictionary.GetAt(FilterDictionaryName),
+                OpenMode.ForRead,
+                false,
+                true) as DBDictionary;
+            if (filterDictionary == null || !filterDictionary.Contains(SpatialFilterName)) return false;
+
+            if (!extensionDictionary.TreatElementsAsHard)
+            {
+                extensionDictionary.UpgradeOpen();
+                extensionDictionary.TreatElementsAsHard = true;
+                changed = true;
+            }
+
+            if (!filterDictionary.TreatElementsAsHard)
+            {
+                filterDictionary.UpgradeOpen();
+                filterDictionary.TreatElementsAsHard = true;
+                changed = true;
+            }
+
+            return true;
+        }
+
         private static void ApplyXClip(Transaction transaction, BlockReference blockReference, Curve boundaryCurve)
         {
             blockReference.CreateExtensionDictionary();
             using (DBDictionary extensionDictionary = (DBDictionary)transaction.GetObject(blockReference.ExtensionDictionary, OpenMode.ForWrite))
             {
-                using (DBDictionary filterDictionary = new DBDictionary())
+                extensionDictionary.TreatElementsAsHard = true;
+
+                using (DBDictionary filterDictionary = new DBDictionary { TreatElementsAsHard = true })
                 {
-                    extensionDictionary.SetAt("ACAD_FILTER", filterDictionary);
+                    extensionDictionary.SetAt(FilterDictionaryName, filterDictionary);
                     transaction.AddNewlyCreatedDBObject(filterDictionary, true);
 
                     Matrix3d worldToBlockMatrix = blockReference.BlockTransform.Inverse();
@@ -1040,7 +1158,7 @@ namespace Callout.Logic
                     SpatialFilterDefinition spatialFilterDefinition = new SpatialFilterDefinition(points, Vector3d.ZAxis, 0.0, 0.0, 0.0, true);
                     using (SpatialFilter spatialFilter = new SpatialFilter { Definition = spatialFilterDefinition })
                     {
-                        filterDictionary.SetAt("SPATIAL", spatialFilter);
+                        filterDictionary.SetAt(SpatialFilterName, spatialFilter);
                         transaction.AddNewlyCreatedDBObject(spatialFilter, true);
                     }
                 }

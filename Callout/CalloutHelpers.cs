@@ -53,8 +53,22 @@ namespace Callout.Services
         /// </summary>
         public static double? GetScaleFromTitleBlockAtPosition(Database database, Transaction transaction, Point3d position)
         {
+            return GetScalesFromTitleBlocksAtPositions(database, transaction, position)[0];
+        }
+
+        /// <summary>
+        /// Resolves scales for several points with a single current-space scan.
+        /// </summary>
+        public static double?[] GetScalesFromTitleBlocksAtPositions(Database database, Transaction transaction, params Point3d[] positions)
+        {
+            if (positions == null) throw new ArgumentNullException(nameof(positions));
+
+            double?[] results = new double?[positions.Length];
+            int unresolvedCount = positions.Length;
+            if (unresolvedCount == 0) return results;
+
             if (string.IsNullOrEmpty(CalloutConfig.TitleBlockName) || string.IsNullOrEmpty(CalloutConfig.ScaleTag))
-                return null;
+                return results;
 
             BlockTableRecord currentSpace = transaction.GetObject(database.CurrentSpaceId, OpenMode.ForRead) as BlockTableRecord;
             foreach (ObjectId id in currentSpace)
@@ -67,27 +81,47 @@ namespace Callout.Services
                     if (bName.Equals(CalloutConfig.TitleBlockName, StringComparison.OrdinalIgnoreCase))
                     {
                         Extents3d ext = blk.GeometricExtents;
-                        if (position.X >= ext.MinPoint.X && position.X <= ext.MaxPoint.X &&
-                            position.Y >= ext.MinPoint.Y && position.Y <= ext.MaxPoint.Y)
-                        {
-                            string scaleStr = GetAttributeValue(transaction, blk, CalloutConfig.ScaleTag);
-                            if (!string.IsNullOrEmpty(scaleStr))
-                            {
-                                string numPart = scaleStr;
-                                int idx = scaleStr.IndexOf('/');
-                                if (idx == -1) idx = scaleStr.IndexOf(':');
-                                if (idx != -1) numPart = scaleStr.Substring(idx + 1);
+                        string scaleStr = null;
 
-                                if (double.TryParse(numPart, out double scaleVal))
-                                {
-                                    return scaleVal;
-                                }
+                        for (int i = 0; i < positions.Length; i++)
+                        {
+                            if (results[i].HasValue || !ContainsPoint(ext, positions[i])) continue;
+
+                            if (scaleStr == null)
+                            {
+                                scaleStr = GetAttributeValue(transaction, blk, CalloutConfig.ScaleTag);
+                            }
+
+                            if (TryParseScale(scaleStr, out double scaleValue))
+                            {
+                                results[i] = scaleValue;
+                                unresolvedCount--;
+                                if (unresolvedCount == 0) return results;
                             }
                         }
                     }
                 }
             }
-            return null;
+            return results;
+        }
+
+        private static bool ContainsPoint(Extents3d extents, Point3d position)
+        {
+            return position.X >= extents.MinPoint.X && position.X <= extents.MaxPoint.X &&
+                   position.Y >= extents.MinPoint.Y && position.Y <= extents.MaxPoint.Y;
+        }
+
+        private static bool TryParseScale(string scaleText, out double scale)
+        {
+            scale = 0.0;
+            if (string.IsNullOrWhiteSpace(scaleText)) return false;
+
+            string numericPart = scaleText.Trim();
+            int separatorIndex = numericPart.IndexOf('/');
+            if (separatorIndex == -1) separatorIndex = numericPart.IndexOf(':');
+            if (separatorIndex != -1) numericPart = numericPart.Substring(separatorIndex + 1).Trim();
+
+            return double.TryParse(numericPart, out scale) && scale > 0.0;
         }
 
         /// <summary>

@@ -11,6 +11,7 @@
         <Command Local="CT1" Global="CT1" />
         <Command Local="CT2" Global="CT2" />
         <Command Local="CTS" Global="CTS" />
+        <Command Local="CTFIXCROP" Global="CTFIXCROP" />
       </Commands>
     </ComponentEntry>
   </Components>

@@ -17,14 +17,15 @@ namespace Callout.Services
     public static class CalloutWatcher
     {
         private static bool _initialized = false;
-        private static bool _needsUpdate = false;
         private static bool _isUpdating = false;
+        private static readonly HashSet<Database> _pendingDatabases = new HashSet<Database>();
 
         public static void Initialize()
         {
             if (_initialized) return;
             var docMgr = Application.DocumentManager;
             docMgr.DocumentCreated += DocMgr_DocumentCreated;
+            docMgr.DocumentToBeDestroyed += DocMgr_DocumentToBeDestroyed;
             foreach (Document doc in docMgr)
             {
                 AttachToDocument(doc);
@@ -39,21 +40,32 @@ namespace Callout.Services
             Application.Idle -= Application_Idle;
             var docMgr = Application.DocumentManager;
             docMgr.DocumentCreated -= DocMgr_DocumentCreated;
+            docMgr.DocumentToBeDestroyed -= DocMgr_DocumentToBeDestroyed;
             foreach (Document doc in docMgr)
             {
                 DetachFromDocument(doc);
             }
+            _pendingDatabases.Clear();
             _initialized = false;
         }
 
         public static void TriggerManualUpdate()
         {
-            _needsUpdate = true;
+            foreach (Document document in Application.DocumentManager)
+            {
+                _pendingDatabases.Add(document.Database);
+            }
         }
 
         private static void DocMgr_DocumentCreated(object sender, DocumentCollectionEventArgs e)
         {
             AttachToDocument(e.Document);
+        }
+
+        private static void DocMgr_DocumentToBeDestroyed(object sender, DocumentCollectionEventArgs e)
+        {
+            DetachFromDocument(e.Document);
+            _pendingDatabases.Remove(e.Document.Database);
         }
 
         private static void AttachToDocument(Document doc)
@@ -70,27 +82,36 @@ namespace Callout.Services
 
         private static void Database_ObjectModified(object sender, ObjectEventArgs e)
         {
-            if (_isUpdating || _needsUpdate) return;
+            if (_isUpdating) return;
 
             if (e.DBObject is BlockReference || e.DBObject is AttributeReference)
             {
-                _needsUpdate = true;
+                Database database = sender as Database;
+                if (database != null && !database.IsDisposed)
+                {
+                    _pendingDatabases.Add(database);
+                }
             }
         }
 
         private static void Application_Idle(object sender, EventArgs e)
         {
-            if (!_needsUpdate || _isUpdating) return;
+            if (_isUpdating) return;
 
             Document doc = Application.DocumentManager.MdiActiveDocument;
-            if (doc == null || string.IsNullOrEmpty(CalloutConfig.TitleBlockName) || string.IsNullOrEmpty(CalloutConfig.SheetNumberTag))
+            if (doc == null || !_pendingDatabases.Contains(doc.Database))
             {
-                _needsUpdate = false;
+                return;
+            }
+
+            if (string.IsNullOrEmpty(CalloutConfig.TitleBlockName) || string.IsNullOrEmpty(CalloutConfig.SheetNumberTag))
+            {
+                _pendingDatabases.Remove(doc.Database);
                 return;
             }
 
             _isUpdating = true;
-            _needsUpdate = false;
+            _pendingDatabases.Remove(doc.Database);
 
             try
             {
@@ -109,6 +130,9 @@ namespace Callout.Services
 
         private static void UpdateCalloutsPositional(Document doc)
         {
+            var mappings = Callout.Logic.CalloutCoreLogic.GetCalloutMappings(doc.Database);
+            if (mappings.Count == 0) return;
+
             using (DocumentLock docLock = doc.LockDocument())
             using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
             {
@@ -164,7 +188,6 @@ namespace Callout.Services
                     }
                 }
 
-                var mappings = Callout.Logic.CalloutCoreLogic.GetCalloutMappings(doc.Database);
                 foreach (var kvp in mappings)
                 {
                     foreach (var pair in kvp.Value)

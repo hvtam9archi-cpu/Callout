@@ -37,7 +37,7 @@ namespace Callout.Jigs
             };
 
             PromptPointResult result = prompts.AcquirePoint(options);
-            if (result.Status == PromptStatus.Cancel) return SamplerStatus.Cancel;
+            if (result.Status != PromptStatus.OK) return SamplerStatus.Cancel;
 
             if (JigInputHandler.ScaleChanged || result.Value.DistanceTo(CurrentPosition) > 0.001)
             {
@@ -88,6 +88,7 @@ namespace Callout.Jigs
     {
         public static double CurrentScale = 1.0;
         public static bool ScaleChanged = false;
+        private static bool _started = false;
 
         [DllImport("user32.dll")]
         private static extern bool SetCursorPos(int X, int Y);
@@ -101,14 +102,18 @@ namespace Callout.Jigs
 
         public static void Start()
         {
+            Stop();
             CurrentScale = 1.0;
             ScaleChanged = false;
             AcadApp.PreTranslateMessage += OnPreTranslateMessage;
+            _started = true;
         }
 
         public static void Stop()
         {
+            if (!_started) return;
             AcadApp.PreTranslateMessage -= OnPreTranslateMessage;
+            _started = false;
         }
 
         private static void OnPreTranslateMessage(object sender, Autodesk.AutoCAD.ApplicationServices.PreTranslateMessageEventArgs e)
