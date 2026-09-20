@@ -20,43 +20,68 @@ namespace Callout
 
         public void Initialize()
         {
-            // Khởi tạo Watcher theo dõi thay đổi BlockReference/Attribute
-            CalloutWatcher.Initialize();
+            try
+            {
+                // Khởi tạo Watcher theo dõi thay đổi BlockReference/Attribute
+                CalloutWatcher.Initialize();
 
-            // Đăng ký sự kiện chờ Ribbon sẵn sàng
-            Application.Idle += Application_Idle;
-            Application.SystemVariableChanged += Application_SystemVariableChanged;
+                // Đăng ký sự kiện chờ Ribbon sẵn sàng
+                Application.Idle += Application_Idle;
+                Application.SystemVariableChanged += Application_SystemVariableChanged;
+            }
+            catch (System.Exception ex)
+            {
+                WriteError("Initialize", ex);
+                Application.Idle -= Application_Idle;
+                Application.SystemVariableChanged -= Application_SystemVariableChanged;
+                CalloutWatcher.Terminate();
+            }
         }
 
         public void Terminate()
         {
             CalloutWatcher.Terminate();
+            Callout.Logic.CalloutCoreLogic.Terminate();
             Application.Idle -= Application_Idle;
             Application.SystemVariableChanged -= Application_SystemVariableChanged;
         }
 
         private void Application_Idle(object sender, EventArgs e)
         {
-            if (ComponentManager.Ribbon != null)
+            try
             {
-                Application.Idle -= Application_Idle;
-                CreateRibbon();
+                if (ComponentManager.Ribbon != null && CreateRibbon())
+                {
+                    Application.Idle -= Application_Idle;
+                }
+            }
+            catch (System.Exception ex)
+            {
+                WriteError("Ribbon Idle", ex);
             }
         }
 
         private void Application_SystemVariableChanged(object sender, SystemVariableChangedEventArgs e)
         {
-            if (e.Name.Equals("WSCURRENT", StringComparison.OrdinalIgnoreCase) && ComponentManager.Ribbon != null)
+            try
             {
-                CreateRibbon();
+                if (e.Name.Equals("WSCURRENT", StringComparison.OrdinalIgnoreCase) && ComponentManager.Ribbon != null)
+                {
+                    CreateRibbon();
+                }
+            }
+            catch (System.Exception ex)
+            {
+                WriteError("SystemVariableChanged", ex);
             }
         }
 
-        private void CreateRibbon()
+        private bool CreateRibbon()
         {
             try
             {
                 RibbonControl ribbon = ComponentManager.Ribbon;
+                if (ribbon == null) return false;
 
                 RibbonTab tab = null;
                 foreach (RibbonTab existingTab in ribbon.Tabs)
@@ -82,7 +107,7 @@ namespace Callout
                 foreach (RibbonPanel existingPanel in tab.Panels)
                 {
                     if (existingPanel.Source.Id == panelId || existingPanel.Source.Title == "Detail Callout" || existingPanel.Source.Title == "Chi tiết Trích")
-                        return; // Panel đã tồn tại
+                        return true; // Panel đã tồn tại
                 }
 
                 RibbonPanelSource panelSource = new RibbonPanelSource { Title = "Detail Callout", Id = panelId };
@@ -99,11 +124,25 @@ namespace Callout
                 tab.Panels.Add(panel);
 
                 tab.IsActive = true; 
+                return true;
             }
             catch (System.Exception ex)
             {
+                WriteError("CreateRibbon", ex);
+                return false;
+            }
+        }
+
+        private static void WriteError(string operation, System.Exception exception)
+        {
+            try
+            {
                 Application.DocumentManager.MdiActiveDocument?.Editor
-                    .WriteMessage($"\n[Callout] Lỗi tạo Ribbon: {ex.Message}");
+                    .WriteMessage($"\n[Callout - {operation}] {exception.Message}");
+            }
+            catch (System.Exception fallbackException)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Callout - {operation}] {exception}\nFallback: {fallbackException}");
             }
         }
 
@@ -145,7 +184,10 @@ namespace Callout
                     return bi;
                 }
             }
-            catch { }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Callout Ribbon] Không tải được icon {fileName}: {ex}");
+            }
             return null;
         }
 
@@ -199,24 +241,39 @@ namespace Callout
 
         public void Execute(object parameter)
         {
-            // AutoCAD có thể truyền CommandParameter (string) hoặc chính RibbonButton
-            string commandName = null;
-            if (parameter is RibbonButton button)
-                commandName = button.CommandParameter as string;
-            else if (parameter is string str)
-                commandName = str;
-
-            if (!string.IsNullOrEmpty(commandName))
+            try
             {
-                Document doc = Application.DocumentManager.MdiActiveDocument;
-                if (doc != null)
+                // AutoCAD có thể truyền CommandParameter (string) hoặc chính RibbonButton
+                string commandName = null;
+                if (parameter is RibbonButton button)
+                    commandName = button.CommandParameter as string;
+                else if (parameter is string str)
+                    commandName = str;
+
+                if (!string.IsNullOrEmpty(commandName))
                 {
-                    string cleanCmd = commandName.Replace("\x03", "").Trim();
-                    if (!string.IsNullOrEmpty(cleanCmd))
+                    Document doc = Application.DocumentManager.MdiActiveDocument;
+                    if (doc != null)
                     {
-                        doc.SendStringToExecute("\x1B\x1B", true, false, false);
-                        doc.SendStringToExecute(cleanCmd + "\n", true, false, false);
+                        string cleanCmd = commandName.Replace("\x03", "").Trim();
+                        if (!string.IsNullOrEmpty(cleanCmd))
+                        {
+                            doc.SendStringToExecute("\x1B\x1B", true, false, false);
+                            doc.SendStringToExecute(cleanCmd + "\n", true, false, false);
+                        }
                     }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                try
+                {
+                    Application.DocumentManager.MdiActiveDocument?.Editor
+                        .WriteMessage($"\n[Callout Ribbon Command] {ex.Message}");
+                }
+                catch (System.Exception fallbackException)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[Callout Ribbon Command] {ex}\nFallback: {fallbackException}");
                 }
             }
         }

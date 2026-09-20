@@ -48,13 +48,21 @@ namespace Callout.UI
 
         private void BtnSelectBlock_Click(object sender, RoutedEventArgs e)
         {
-            var doc = Application.DocumentManager.MdiActiveDocument;
-            var ed = doc.Editor;
-
-            this.Hide();
+            Autodesk.AutoCAD.ApplicationServices.Document doc = null;
+            Autodesk.AutoCAD.EditorInput.Editor ed = null;
 
             try
             {
+                doc = Application.DocumentManager.MdiActiveDocument;
+                if (doc == null)
+                {
+                    MessageBox.Show("Không có bản vẽ đang hoạt động.", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+
+                ed = doc.Editor;
+                Hide();
+
                 PromptEntityOptions peo = new PromptEntityOptions("\nChọn Block Attribute làm Block Khung: ");
                 peo.SetRejectMessage("\nChỉ chọn BlockReference!");
                 peo.AddAllowedClass(typeof(BlockReference), true);
@@ -99,7 +107,14 @@ namespace Callout.UI
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage($"\n[ERROR Chọn Block]: {ex.Message}");
+                try
+                {
+                    ed?.WriteMessage($"\n[ERROR Chọn Block]: {ex.Message}");
+                }
+                catch (System.Exception fallbackException)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[ERROR Chọn Block]: {ex}\nFallback: {fallbackException}");
+                }
             }
             finally
             {
@@ -129,25 +144,34 @@ namespace Callout.UI
                     TitleIcon.Source = bi;
                 }
             }
-            catch { }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Callout Config] Không tải được icon: {ex}");
+            }
         }
 
         private void BtnSave_Click(object sender, RoutedEventArgs e)
         {
-            if (string.IsNullOrEmpty(TxtBlockName.Text) || CbxAttributes.SelectedItem == null || CbxScaleAttributes.SelectedItem == null)
+            try
             {
-                MessageBox.Show("Vui lòng chọn Block và các Attribute!", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
+                if (string.IsNullOrEmpty(TxtBlockName.Text) || CbxAttributes.SelectedItem == null || CbxScaleAttributes.SelectedItem == null)
+                {
+                    MessageBox.Show("Vui lòng chọn Block và các Attribute!", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+
+                Callout.Services.CalloutConfig.TitleBlockName = TxtBlockName.Text;
+                Callout.Services.CalloutConfig.SheetNumberTag = CbxAttributes.SelectedItem.ToString();
+                Callout.Services.CalloutConfig.ScaleTag = CbxScaleAttributes.SelectedItem.ToString();
+
+                Callout.Services.CalloutWatcher.TriggerManualUpdate();
+                Close();
             }
-
-            Callout.Services.CalloutConfig.TitleBlockName = TxtBlockName.Text;
-            Callout.Services.CalloutConfig.SheetNumberTag = CbxAttributes.SelectedItem.ToString();
-            Callout.Services.CalloutConfig.ScaleTag = CbxScaleAttributes.SelectedItem.ToString();
-            
-            Callout.Services.CalloutWatcher.TriggerManualUpdate();
-
-            this.DialogResult = true;
-            this.Close();
+            catch (System.Exception ex)
+            {
+                Application.DocumentManager.MdiActiveDocument?.Editor
+                    .WriteMessage($"\n[ERROR CT2 Save]: {ex.Message}");
+            }
         }
     }
 }

@@ -24,26 +24,48 @@ namespace Callout.Services
         {
             if (_initialized) return;
             var docMgr = Application.DocumentManager;
-            docMgr.DocumentCreated += DocMgr_DocumentCreated;
-            docMgr.DocumentToBeDestroyed += DocMgr_DocumentToBeDestroyed;
-            foreach (Document doc in docMgr)
+            try
             {
-                AttachToDocument(doc);
+                docMgr.DocumentCreated += DocMgr_DocumentCreated;
+                docMgr.DocumentToBeDestroyed += DocMgr_DocumentToBeDestroyed;
+                foreach (Document doc in docMgr)
+                {
+                    try
+                    {
+                        AttachToDocument(doc);
+                    }
+                    catch (Exception ex)
+                    {
+                        WriteError("Attach", ex);
+                    }
+                }
+                Application.Idle += Application_Idle;
+                _initialized = true;
             }
-            Application.Idle += Application_Idle;
-            _initialized = true;
+            catch (Exception ex)
+            {
+                Terminate();
+                WriteError("Initialize", ex);
+                throw;
+            }
         }
 
         public static void Terminate()
         {
-            if (!_initialized) return;
             Application.Idle -= Application_Idle;
             var docMgr = Application.DocumentManager;
             docMgr.DocumentCreated -= DocMgr_DocumentCreated;
             docMgr.DocumentToBeDestroyed -= DocMgr_DocumentToBeDestroyed;
             foreach (Document doc in docMgr)
             {
-                DetachFromDocument(doc);
+                try
+                {
+                    DetachFromDocument(doc);
+                }
+                catch (Exception ex)
+                {
+                    WriteError("Detach", ex);
+                }
             }
             _pendingDatabases.Clear();
             _initialized = false;
@@ -51,7 +73,8 @@ namespace Callout.Services
 
         public static void TriggerManualUpdate()
         {
-            foreach (Document document in Application.DocumentManager)
+            Document document = Application.DocumentManager.MdiActiveDocument;
+            if (document != null && !document.Database.IsDisposed)
             {
                 _pendingDatabases.Add(document.Database);
             }
@@ -59,13 +82,27 @@ namespace Callout.Services
 
         private static void DocMgr_DocumentCreated(object sender, DocumentCollectionEventArgs e)
         {
-            AttachToDocument(e.Document);
+            try
+            {
+                AttachToDocument(e.Document);
+            }
+            catch (Exception ex)
+            {
+                WriteError("DocumentCreated", ex);
+            }
         }
 
         private static void DocMgr_DocumentToBeDestroyed(object sender, DocumentCollectionEventArgs e)
         {
-            DetachFromDocument(e.Document);
-            _pendingDatabases.Remove(e.Document.Database);
+            try
+            {
+                DetachFromDocument(e.Document);
+                _pendingDatabases.Remove(e.Document.Database);
+            }
+            catch (Exception ex)
+            {
+                WriteError("DocumentToBeDestroyed", ex);
+            }
         }
 
         private static void AttachToDocument(Document doc)
@@ -82,15 +119,22 @@ namespace Callout.Services
 
         private static void Database_ObjectModified(object sender, ObjectEventArgs e)
         {
-            if (_isUpdating) return;
-
-            if (e.DBObject is BlockReference || e.DBObject is AttributeReference)
+            try
             {
-                Database database = sender as Database;
-                if (database != null && !database.IsDisposed)
+                if (_isUpdating) return;
+
+                if (e.DBObject is BlockReference || e.DBObject is AttributeReference)
                 {
-                    _pendingDatabases.Add(database);
+                    Database database = sender as Database;
+                    if (database != null && !database.IsDisposed)
+                    {
+                        _pendingDatabases.Add(database);
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                WriteError("ObjectModified", ex);
             }
         }
 
@@ -98,32 +142,40 @@ namespace Callout.Services
         {
             if (_isUpdating) return;
 
-            Document doc = Application.DocumentManager.MdiActiveDocument;
-            if (doc == null || !_pendingDatabases.Contains(doc.Database))
-            {
-                return;
-            }
-
-            if (string.IsNullOrEmpty(CalloutConfig.TitleBlockName) || string.IsNullOrEmpty(CalloutConfig.SheetNumberTag))
-            {
-                _pendingDatabases.Remove(doc.Database);
-                return;
-            }
-
-            _isUpdating = true;
-            _pendingDatabases.Remove(doc.Database);
-
             try
             {
-                UpdateCalloutsPositional(doc);
+                Document doc = Application.DocumentManager.MdiActiveDocument;
+                if (doc == null || !_pendingDatabases.Contains(doc.Database) || !doc.Editor.IsQuiescent)
+                {
+                    return;
+                }
+
+                if (string.IsNullOrEmpty(CalloutConfig.TitleBlockName) || string.IsNullOrEmpty(CalloutConfig.SheetNumberTag))
+                {
+                    _pendingDatabases.Remove(doc.Database);
+                    return;
+                }
+
+                _isUpdating = true;
+                bool updateCompleted = false;
+                try
+                {
+                    UpdateCalloutsPositional(doc);
+                    updateCompleted = true;
+                }
+                catch (Exception ex)
+                {
+                    WriteError("Idle update", ex);
+                }
+                finally
+                {
+                    if (updateCompleted) _pendingDatabases.Remove(doc.Database);
+                    _isUpdating = false;
+                }
             }
             catch (Exception ex)
             {
-                Application.DocumentManager.MdiActiveDocument?.Editor
-                    .WriteMessage($"\n[Callout Watcher] Lỗi cập nhật: {ex.Message}");
-            }
-            finally
-            {
+                WriteError("Idle", ex);
                 _isUpdating = false;
             }
         }
@@ -137,6 +189,7 @@ namespace Callout.Services
             using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
             {
                 BlockTableRecord currentSpace = tr.GetObject(doc.Database.CurrentSpaceId, OpenMode.ForRead) as BlockTableRecord;
+                if (currentSpace == null) return;
 
                 List<BlockReference> titleBlocks = new List<BlockReference>();
                 foreach (ObjectId id in currentSpace)
@@ -199,6 +252,7 @@ namespace Callout.Services
 
                         string targetSheet = "";
                         double? targetScale = null;
+                        bool matchedTitleBlock = false;
                         try
                         {
                             Point3d pos = titleBubble.Position;
@@ -207,6 +261,7 @@ namespace Callout.Services
                                 if (pos.X >= tb.Item1.MinPoint.X && pos.X <= tb.Item1.MaxPoint.X &&
                                     pos.Y >= tb.Item1.MinPoint.Y && pos.Y <= tb.Item1.MaxPoint.Y)
                                 {
+                                    matchedTitleBlock = true;
                                     targetSheet = tb.Item2;
                                     targetScale = tb.Item3;
                                     break;
@@ -219,6 +274,9 @@ namespace Callout.Services
                                 .WriteMessage($"\n[Callout Watcher] Lỗi xác định Sheet/Scale: {ex.Message}");
                         }
 
+                        // Không xóa dữ liệu hiện có khi title block không nằm trong current space.
+                        if (!matchedTitleBlock) continue;
+
                         string currentSheet = CalloutHelpers.GetAttributeValue(tr, titleBubble, "SHEETNUMBER");
                         if (currentSheet != targetSheet)
                         {
@@ -229,7 +287,7 @@ namespace Callout.Services
                         if (targetScale.HasValue && Math.Abs(titleBubble.ScaleFactors.X - targetScale.Value) > 0.001)
                         {
                             if (!titleBubble.IsWriteEnabled) titleBubble.UpgradeOpen();
-                            titleBubble.ScaleFactors = new Scale3d(targetScale.Value);
+                            titleBubble.ScaleFactors = PreserveScaleSigns(titleBubble.ScaleFactors, targetScale.Value);
                         }
 
                         if (!pair.SourceBubbleId.IsErased && !pair.SourceBubbleId.IsNull)
@@ -245,6 +303,7 @@ namespace Callout.Services
                                 }
 
                                 double? sourceTargetScale = null;
+                                bool matchedSourceTitleBlock = false;
                                 try
                                 {
                                     Point3d sourcePos = sourceBubble.Position;
@@ -253,17 +312,21 @@ namespace Callout.Services
                                         if (sourcePos.X >= tb.Item1.MinPoint.X && sourcePos.X <= tb.Item1.MaxPoint.X &&
                                             sourcePos.Y >= tb.Item1.MinPoint.Y && sourcePos.Y <= tb.Item1.MaxPoint.Y)
                                         {
+                                            matchedSourceTitleBlock = true;
                                             sourceTargetScale = tb.Item3;
                                             break;
                                         }
                                     }
                                 }
-                                catch {}
+                                catch (Exception ex)
+                                {
+                                    WriteError("Source scale", ex);
+                                }
 
-                                if (sourceTargetScale.HasValue && Math.Abs(sourceBubble.ScaleFactors.X - sourceTargetScale.Value) > 0.001)
+                                if (matchedSourceTitleBlock && sourceTargetScale.HasValue && Math.Abs(sourceBubble.ScaleFactors.X - sourceTargetScale.Value) > 0.001)
                                 {
                                     if (!sourceBubble.IsWriteEnabled) sourceBubble.UpgradeOpen();
-                                    sourceBubble.ScaleFactors = new Scale3d(sourceTargetScale.Value);
+                                    sourceBubble.ScaleFactors = PreserveScaleSigns(sourceBubble.ScaleFactors, sourceTargetScale.Value);
                                 }
                             }
                         }
@@ -271,6 +334,27 @@ namespace Callout.Services
                 }
 
                 tr.Commit();
+            }
+        }
+
+        private static Scale3d PreserveScaleSigns(Scale3d currentScale, double absoluteScale)
+        {
+            double xSign = currentScale.X < 0.0 ? -1.0 : 1.0;
+            double ySign = currentScale.Y < 0.0 ? -1.0 : 1.0;
+            double zSign = currentScale.Z < 0.0 ? -1.0 : 1.0;
+            return new Scale3d(absoluteScale * xSign, absoluteScale * ySign, absoluteScale * zSign);
+        }
+
+        private static void WriteError(string operation, Exception exception)
+        {
+            try
+            {
+                Application.DocumentManager.MdiActiveDocument?.Editor
+                    .WriteMessage($"\n[Callout Watcher - {operation}] {exception.Message}");
+            }
+            catch (Exception fallbackException)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Callout Watcher - {operation}] {exception}\nFallback: {fallbackException}");
             }
         }
     }

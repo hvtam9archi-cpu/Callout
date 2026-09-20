@@ -29,58 +29,92 @@ namespace Callout.Jigs
 
         protected override SamplerStatus Sampler(JigPrompts prompts)
         {
-            JigPromptPointOptions options = new JigPromptPointOptions("\nThay đổi Tỷ lệ: ")
+            try
             {
-                UserInputControls = UserInputControls.Accept3dCoordinates | UserInputControls.NullResponseAccepted | UserInputControls.GovernedByOrthoMode,
-                UseBasePoint = true,
-                BasePoint = _basePoint
-            };
+                JigPromptPointOptions options = new JigPromptPointOptions("\nThay đổi Tỷ lệ: ")
+                {
+                    UserInputControls = UserInputControls.Accept3dCoordinates | UserInputControls.NullResponseAccepted | UserInputControls.GovernedByOrthoMode,
+                    UseBasePoint = true,
+                    BasePoint = _basePoint
+                };
 
-            PromptPointResult result = prompts.AcquirePoint(options);
-            if (result.Status != PromptStatus.OK) return SamplerStatus.Cancel;
+                PromptPointResult result = prompts.AcquirePoint(options);
+                if (result.Status != PromptStatus.OK) return SamplerStatus.Cancel;
 
-            if (JigInputHandler.ScaleChanged || result.Value.DistanceTo(CurrentPosition) > 0.001)
-            {
-                CurrentPosition = result.Value;
-                JigInputHandler.ScaleChanged = false;
-                return SamplerStatus.OK;
+                if (JigInputHandler.ScaleChanged || result.Value.DistanceTo(CurrentPosition) > 0.001)
+                {
+                    CurrentPosition = result.Value;
+                    JigInputHandler.ScaleChanged = false;
+                    return SamplerStatus.OK;
+                }
+
+                return SamplerStatus.NoChange;
             }
-
-            return SamplerStatus.NoChange;
+            catch (Exception)
+            {
+                return SamplerStatus.Cancel;
+            }
         }
 
         protected override bool WorldDraw(Autodesk.AutoCAD.GraphicsInterface.WorldDraw draw)
         {
-            JigRef.Position = CurrentPosition;
-            JigRef.ScaleFactors = new Scale3d(JigInputHandler.CurrentScale);
-
-            draw.Geometry.Draw(JigRef);
-
-            MathTransform = Matrix3d.Scaling(JigInputHandler.CurrentScale, CurrentPosition) * Matrix3d.Displacement(_basePoint.GetVectorTo(CurrentPosition));
-
-            double viewSize = (double)AcadApp.GetSystemVariable("VIEWSIZE");
-            double visualDotSize = viewSize * 0.005;
-
-            if (!_isFarCallout)
+            try
             {
-                var leaderEntities = CalloutGeometryService.CreateSmartLeader(_originalExtents, MathTransform, visualDotSize);
-                foreach (var ent in leaderEntities)
+                double scale = JigInputHandler.CurrentScale;
+                if (double.IsNaN(scale) || double.IsInfinity(scale) || scale <= 0.0)
                 {
-                    draw.Geometry.Draw(ent);
-                    ent.Dispose();
+                    return false;
                 }
-            }
 
-            using (DBText contextText = new DBText())
+                JigRef.Position = CurrentPosition;
+                JigRef.ScaleFactors = new Scale3d(scale);
+
+                MathTransform = Matrix3d.Scaling(scale, CurrentPosition) * Matrix3d.Displacement(_basePoint.GetVectorTo(CurrentPosition));
+                draw.Geometry.Draw(JigRef);
+
+                double viewSize = (double)AcadApp.GetSystemVariable("VIEWSIZE");
+                if (double.IsNaN(viewSize) || double.IsInfinity(viewSize) || viewSize <= 0.0)
+                {
+                    return true;
+                }
+
+                double visualDotSize = viewSize * 0.005;
+
+                if (!_isFarCallout)
+                {
+                    var leaderEntities = CalloutGeometryService.CreateSmartLeader(_originalExtents, MathTransform, visualDotSize);
+                    try
+                    {
+                        foreach (var ent in leaderEntities)
+                        {
+                            if (ent == null || ent.IsDisposed) continue;
+                            draw.Geometry.Draw(ent);
+                        }
+                    }
+                    finally
+                    {
+                        foreach (var ent in leaderEntities)
+                        {
+                            if (ent != null && !ent.IsDisposed) ent.Dispose();
+                        }
+                    }
+                }
+
+                using (DBText contextText = new DBText())
+                {
+                    contextText.Position = CurrentPosition + new Vector3d(viewSize * 0.03, viewSize * 0.05, 0);
+                    contextText.Height = viewSize * 0.02;
+                    contextText.TextString = $"Tỷ lệ: {scale}x";
+                    contextText.ColorIndex = 2;
+                    draw.Geometry.Draw(contextText);
+                }
+
+                return true;
+            }
+            catch (Exception)
             {
-                contextText.Position = CurrentPosition + new Vector3d(viewSize * 0.03, viewSize * 0.05, 0);
-                contextText.Height = viewSize * 0.02;
-                contextText.TextString = $"Tỷ lệ: {JigInputHandler.CurrentScale}x";
-                contextText.ColorIndex = 2;
-                draw.Geometry.Draw(contextText);
+                return false;
             }
-
-            return true;
         }
     }
 

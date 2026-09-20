@@ -16,9 +16,9 @@ namespace Callout.Logic
             {
                 doc.Editor.Command("_.UNDO", "_Begin");
             }
-            catch
+            catch (System.Exception ex)
             {
-                // Bỏ qua nếu UNDO không khả dụng ở thời điểm này
+                System.Diagnostics.Debug.WriteLine($"[Callout Undo Begin] {ex}");
             }
         }
 
@@ -29,9 +29,9 @@ namespace Callout.Logic
             {
                 doc.Editor.Command("_.UNDO", "_End");
             }
-            catch
+            catch (System.Exception ex)
             {
-                // Bỏ qua nếu UNDO không khả dụng ở thời điểm này
+                System.Diagnostics.Debug.WriteLine($"[Callout Undo End] {ex}");
             }
         }
     }

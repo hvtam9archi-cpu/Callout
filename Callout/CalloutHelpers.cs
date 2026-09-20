@@ -261,15 +261,34 @@ namespace Callout.Services
             {
                 if (blockTable.Has(blockName)) return blockTable[blockName];
 
+                object previousDimBlock = null;
+                bool systemVariableChanged = false;
                 try
                 {
+                    previousDimBlock = Application.GetSystemVariable("DIMBLK");
                     Application.SetSystemVariable("DIMBLK", blockName);
+                    systemVariableChanged = true;
                     if (blockTable.Has(blockName)) return blockTable[blockName];
                 }
                 catch (Exception ex)
                 {
                     Application.DocumentManager.MdiActiveDocument?.Editor
                         .WriteMessage($"\n[Cảnh báo] Lấy DB Arrow Block {blockName} lỗi: {ex.Message}");
+                }
+                finally
+                {
+                    if (systemVariableChanged && previousDimBlock != null)
+                    {
+                        try
+                        {
+                            Application.SetSystemVariable("DIMBLK", previousDimBlock);
+                        }
+                        catch (Exception ex)
+                        {
+                            Application.DocumentManager.MdiActiveDocument?.Editor
+                                .WriteMessage($"\n[Cảnh báo] Không khôi phục được DIMBLK: {ex.Message}");
+                        }
+                    }
                 }
                 return ObjectId.Null;
             }
@@ -412,17 +431,23 @@ namespace Callout.Services
                     btr.Name = blockName;
                     btr.Origin = Point3d.Origin;
 
+                    blockTable.Add(btr);
+                    transaction.AddNewlyCreatedDBObject(btr, true);
+
                     Circle c1 = new Circle(Point3d.Origin, Vector3d.ZAxis, 5.5);
                     c1.SetDatabaseDefaults();
                     btr.AppendEntity(c1);
+                    transaction.AddNewlyCreatedDBObject(c1, true);
 
                     Circle c2 = new Circle(Point3d.Origin, Vector3d.ZAxis, 6.0);
                     c2.SetDatabaseDefaults();
                     btr.AppendEntity(c2);
+                    transaction.AddNewlyCreatedDBObject(c2, true);
 
                     Line l1 = new Line(new Point3d(-6.0, 0, 0), new Point3d(6.0, 0, 0));
                     l1.SetDatabaseDefaults();
                     btr.AppendEntity(l1);
+                    transaction.AddNewlyCreatedDBObject(l1, true);
 
                     ObjectId abcVerdanaStyleId = EnsureTextStyle(database, transaction, "ABC_Verdana", "verdana.ttf");
 
@@ -438,6 +463,7 @@ namespace Callout.Services
                     ad1.Prompt = "Enter view number";
                     ad1.TextStyleId = abcVerdanaStyleId;
                     btr.AppendEntity(ad1);
+                    transaction.AddNewlyCreatedDBObject(ad1, true);
 
                     AttributeDefinition ad2 = new AttributeDefinition();
                     ad2.SetDatabaseDefaults();
@@ -451,9 +477,7 @@ namespace Callout.Services
                     ad2.Prompt = "Enter sheet number";
                     ad2.TextStyleId = abcVerdanaStyleId;
                     btr.AppendEntity(ad2);
-
-                    blockTable.Add(btr);
-                    transaction.AddNewlyCreatedDBObject(btr, true);
+                    transaction.AddNewlyCreatedDBObject(ad2, true);
                     return btr.ObjectId;
                 }
             }

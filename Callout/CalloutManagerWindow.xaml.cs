@@ -32,6 +32,8 @@ namespace Callout.UI
 
     public partial class CalloutManagerWindow : Window
     {
+        private Database _displayedDatabase;
+
         private readonly Color[] GroupColors = new Color[] {
             Color.FromRgb(231, 76, 60),  Color.FromRgb(46, 204, 113), Color.FromRgb(52, 152, 219),
             Color.FromRgb(155, 89, 182), Color.FromRgb(241, 196, 15), Color.FromRgb(230, 126, 34),
@@ -62,7 +64,21 @@ namespace Callout.UI
 
         private void DocumentManager_DocumentActivated(object sender, DocumentCollectionEventArgs e)
         {
-            this.Dispatcher.Invoke(() => RefreshData());
+            try
+            {
+                if (Dispatcher.CheckAccess())
+                {
+                    RefreshData();
+                }
+                else
+                {
+                    Dispatcher.BeginInvoke(new Action(RefreshData));
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteUiError("DocumentActivated", ex);
+            }
         }
 
         private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -113,12 +129,22 @@ namespace Callout.UI
                     TitleIcon.Source = bi;
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Callout Manager] Không tải được icon: {ex}");
+            }
         }
 
         private void BtnRefresh_Click(object sender, RoutedEventArgs e)
         {
-            RefreshData();
+            try
+            {
+                RefreshData();
+            }
+            catch (Exception ex)
+            {
+                WriteUiError("Refresh", ex);
+            }
         }
 
         private void BtnGoTo_Click(object sender, RoutedEventArgs e)
@@ -129,9 +155,33 @@ namespace Callout.UI
         private void RefreshData()
         {
             if (MainTreeView == null) return;
-            
+
             var doc = Application.DocumentManager.MdiActiveDocument;
-            if (doc == null) return;
+            if (doc == null)
+            {
+                _displayedDatabase = null;
+                MainTreeView.ItemsSource = new List<CalloutNodeData>();
+                return;
+            }
+
+            try
+            {
+                RefreshDataForDocument(doc);
+            }
+            catch (Exception ex)
+            {
+                _displayedDatabase = null;
+                MainTreeView.ItemsSource = new List<CalloutNodeData>
+                {
+                    new CalloutNodeData { Title = "Không thể đọc dữ liệu callout của bản vẽ hiện tại." }
+                };
+                WriteUiError("RefreshData", ex);
+            }
+        }
+
+        private void RefreshDataForDocument(Document doc)
+        {
+            _displayedDatabase = doc.Database;
 
             var mappings = Callout.Logic.CalloutCoreLogic.GetCalloutMappings(doc.Database);
             if (mappings.Count == 0)
@@ -163,7 +213,10 @@ namespace Callout.UI
                                     string sheetNo = CalloutHelpers.GetAttributeValue(tr, blk, CalloutConfig.SheetNumberTag);
                                     if (sheetNo != null) tbData.Add(Tuple.Create(blk.GeometricExtents, sheetNo));
                                 }
-                                catch { }
+                                catch (Exception ex)
+                                {
+                                    WriteUiError("TitleBlock", ex);
+                                }
                             }
                         }
                     }
@@ -193,7 +246,11 @@ namespace Callout.UI
                                 break;
                             }
                         }
-                    } catch { }
+                    }
+                    catch (Exception ex)
+                    {
+                        WriteUiError("SourceSheet", ex);
+                    }
 
                     // Tạo gradient chung cho cả block gốc và các chi tiết trích của nó
                     var groupBrush = CreateUniqueGradient(groupCounter);
@@ -301,29 +358,58 @@ namespace Callout.UI
 
         private void GoToSelectedNode()
         {
-            var data = MainTreeView.SelectedItem as CalloutNodeData;
-            if (data == null || data.ObjectId == null) return;
-            
-            ObjectId targetId = data.ObjectId;
-
-            if (targetId.IsNull || targetId.IsErased)
+            try
             {
-                MessageBox.Show("Đối tượng không còn tồn tại trên bản vẽ.", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
+                var data = MainTreeView.SelectedItem as CalloutNodeData;
+                if (data == null) return;
 
-            var doc = Application.DocumentManager.MdiActiveDocument;
-            using (DocumentLock docLock = doc.LockDocument())
-            using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
-            {
-                BlockReference ent = tr.GetObject(targetId, OpenMode.ForRead) as BlockReference;
-                if (ent != null)
+                var doc = Application.DocumentManager.MdiActiveDocument;
+                if (doc == null)
                 {
-                    try {
-                        ZoomToExtents(doc.Editor, ent, data.IsSource);
-                    } catch { }
+                    MessageBox.Show("Không có bản vẽ đang hoạt động.", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
                 }
-                tr.Commit();
+
+                if (_displayedDatabase == null || !ReferenceEquals(_displayedDatabase, doc.Database))
+                {
+                    RefreshData();
+                    return;
+                }
+
+                ObjectId targetId = data.ObjectId;
+                if (targetId.IsNull || !targetId.IsValid || targetId.IsErased)
+                {
+                    MessageBox.Show("Đối tượng không còn tồn tại trên bản vẽ.", "Lỗi", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+
+                using (DocumentLock docLock = doc.LockDocument())
+                using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
+                {
+                    BlockReference ent = tr.GetObject(targetId, OpenMode.ForRead, false, true) as BlockReference;
+                    if (ent != null && !ent.IsErased)
+                    {
+                        ZoomToExtents(doc.Editor, ent, data.IsSource);
+                    }
+                    tr.Commit();
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteUiError("GoTo", ex);
+            }
+        }
+
+        private static void WriteUiError(string operation, Exception exception)
+        {
+            try
+            {
+                Application.DocumentManager.MdiActiveDocument?.Editor
+                    .WriteMessage($"\n[Callout UI - {operation}] {exception.Message}");
+            }
+            catch (Exception fallbackException)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Callout UI - {operation}] {exception}\nFallback: {fallbackException}");
             }
         }
 
