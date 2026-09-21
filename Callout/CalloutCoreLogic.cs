@@ -23,6 +23,7 @@ namespace Callout.Logic
     {
         private const string FilterDictionaryName = "ACAD_FILTER";
         private const string SpatialFilterName = "SPATIAL";
+        private const double ClipPlanarityTolerance = 1.0e-6;
 
         private static readonly Dictionary<Database, Dictionary<ObjectId, List<CalloutBubblePair>>> _blockCalloutBubbles = new Dictionary<Database, Dictionary<ObjectId, List<CalloutBubblePair>>>();
         private static bool _documentDestroyedHandlerAttached;
@@ -194,8 +195,7 @@ namespace Callout.Logic
 
             Database database = document.Database;
             Editor editor = document.Editor;
-            ObjectId detailContentBlockId = ObjectId.Null;
-            bool calloutInserted = false;
+            CalloutJig calloutJig = null;
 
             // NGUYÊN TẮC: Crash-proof Safety (Global try-catch tại Entry Point)
             UndoHelper.Begin(document);
@@ -226,7 +226,7 @@ namespace Callout.Logic
                 Extents3d originalExtents = new Extents3d();
                 Point3d basePoint = Point3d.Origin;
 
-                // 2. TRANSACTION ĐỢT 1: Lấy thông tin cơ bản và tạo Khung rỗng (Nhỏ, Đóng ngay)
+                // 2. TRANSACTION ĐỢT 1: Lấy thông tin và tạo các entity preview trong bộ nhớ.
                 using (DocumentLock docLock = document.LockDocument())
                 using (Transaction transaction = database.TransactionManager.StartTransaction())
                 {
@@ -238,6 +238,13 @@ namespace Callout.Logic
                         if (!boundaryCurve.Closed)
                         {
                             editor.WriteMessage("\nKhung trích phải là đường cong khép kín.");
+                            return;
+                        }
+
+                        if (!TryGetPlanarElevation(boundaryCurve, Matrix3d.Identity, out _) ||
+                            !TryGetPlanarElevation(boundaryCurve, sourceBlock.BlockTransform.Inverse(), out _))
+                        {
+                            editor.WriteMessage("\nKhung trích phải nằm trên mặt phẳng 2D song song XY của bản vẽ và của block.");
                             return;
                         }
 
@@ -286,56 +293,13 @@ namespace Callout.Logic
                             (originalExtents.MinPoint.Z + originalExtents.MaxPoint.Z) / 2.0
                         );
 
-                        string newBlockName = "CT_DETAIL_" + System.Guid.NewGuid().ToString("N").Substring(0, 10).ToUpper();
-                        using (BlockTable blockTable = (BlockTable)transaction.GetObject(database.BlockTableId, OpenMode.ForWrite))
-                        using (BlockTableRecord detailBlockRecord = new BlockTableRecord { Name = newBlockName })
-                        {
-                            detailContentBlockId = blockTable.Add(detailBlockRecord);
-                            transaction.AddNewlyCreatedDBObject(detailBlockRecord, true);
-
-                            using (BlockReference innerBlock = sourceBlock.Clone() as BlockReference)
-                            using (Curve innerCurve = boundaryCurve.Clone() as Curve)
-                            {
-                                innerCurve.LayerId = sourceLayerId;
-
-                                Vector3d vectorToOrigin = basePoint.GetVectorTo(Point3d.Origin);
-                                innerBlock.TransformBy(Matrix3d.Displacement(vectorToOrigin));
-                                innerCurve.TransformBy(Matrix3d.Displacement(vectorToOrigin));
-
-                                detailBlockRecord.AppendEntity(innerBlock);
-                                transaction.AddNewlyCreatedDBObject(innerBlock, true);
-
-                                foreach (ObjectId attributeId in sourceBlock.AttributeCollection)
-                                {
-                                    if (attributeId.IsNull || attributeId.IsErased) continue;
-                                    AttributeReference sourceAttribute = transaction.GetObject(attributeId, OpenMode.ForRead) as AttributeReference;
-                                    AttributeReference clonedAttribute = null;
-                                    bool attributeAdded = false;
-                                    try
-                                    {
-                                        if (sourceAttribute == null) continue;
-                                        clonedAttribute = sourceAttribute.Clone() as AttributeReference;
-                                        if (clonedAttribute == null) continue;
-                                        clonedAttribute.TransformBy(Matrix3d.Displacement(vectorToOrigin));
-                                        innerBlock.AttributeCollection.AppendAttribute(clonedAttribute);
-                                        transaction.AddNewlyCreatedDBObject(clonedAttribute, true);
-                                        attributeAdded = true;
-                                    }
-                                    finally
-                                    {
-                                        if (!attributeAdded && clonedAttribute != null && !clonedAttribute.IsDisposed)
-                                        {
-                                            clonedAttribute.Dispose();
-                                        }
-                                    }
-                                }
-                                
-                                detailBlockRecord.AppendEntity(innerCurve);
-                                transaction.AddNewlyCreatedDBObject(innerCurve, true);
-
-                                ApplyXClip(transaction, innerBlock, innerCurve);
-                            }
-                        }
+                        calloutJig = CreateCalloutJig(
+                            transaction,
+                            sourceBlock,
+                            boundaryCurve,
+                            basePoint,
+                            originalExtents,
+                            isFarCallout);
                     }
                     transaction.Commit();
                 }
@@ -344,10 +308,9 @@ namespace Callout.Logic
                 PromptResult jigResult = null;
                 double calloutScale = 1.0;
                 
-                using (BlockReference jigReference = new BlockReference(basePoint, detailContentBlockId) { LayerId = sourceLayerId })
+                if (calloutJig == null) return;
+                using (calloutJig)
                 {
-                    var calloutJig = new CalloutJig(jigReference, basePoint, originalExtents, isFarCallout);
-                    
                     try
                     {
                         JigInputHandler.Start();
@@ -406,7 +369,8 @@ namespace Callout.Logic
                     }
 
                     double dimensionScale = detailDimensionScale;
-                    Matrix3d mathTransform = calloutJig.MathTransform;
+                    Matrix3d mathTransform = Matrix3d.Scaling(calloutScale, finalPosition) *
+                                             Matrix3d.Displacement(basePoint.GetVectorTo(finalPosition));
 
                     Point3d sourceBubblePos = basePoint;
                     if (isFarCallout)
@@ -414,18 +378,43 @@ namespace Callout.Logic
                         sourceBubblePos = new Point3d(originalExtents.MaxPoint.X + (12.0 * sourceDimensionScale), originalExtents.MaxPoint.Y + (12.0 * sourceDimensionScale), 0);
                     }
 
-                    // 4. TRANSACTION ĐỢT 2: Thêm Viewport Block + Thêm Dimensions (Thao tác DB rồi đóng ngay)
+                    // 4. TRANSACTION ĐỢT 2: Deep-clone nội dung trực tiếp, gắn XClip và thêm annotations.
                     using (DocumentLock docLock = document.LockDocument())
                     using (Transaction transaction = database.TransactionManager.StartTransaction())
                     {
                         ObjectId dimensionLayerId = CalloutHelpers.EnsureLayer(database, transaction, "ABC_A_Kichthuoc", Color.FromColorIndex(ColorMethod.ByAci, 8), "Continuous", LineWeight.LineWeight009);
+                        ObjectId clonedBlockId = DeepCloneBlockReference(database, sourceBlockId, database.CurrentSpaceId);
 
                         BlockTableRecord currentSpace = (BlockTableRecord)transaction.GetObject(database.CurrentSpaceId, OpenMode.ForWrite);
                         {
-                            jigReference.Position = finalPosition;
-                            jigReference.ScaleFactors = new Scale3d(calloutScale);
-                            currentSpace.AppendEntity(jigReference);
-                            transaction.AddNewlyCreatedDBObject(jigReference, true);
+                            BlockReference detailBlock = transaction.GetObject(clonedBlockId, OpenMode.ForWrite, false, true) as BlockReference;
+                            Curve originalBoundaryCurve = transaction.GetObject(boundaryPolylineId, OpenMode.ForRead) as Curve;
+                            if (detailBlock == null || originalBoundaryCurve == null)
+                            {
+                                throw new InvalidOperationException("Không thể tạo đối tượng chi tiết trích.");
+                            }
+
+                            detailBlock.TransformBy(mathTransform);
+
+                            Polyline detailBoundary = CreateBoundaryPolyline(
+                                originalBoundaryCurve,
+                                mathTransform,
+                                sourceLayerId);
+                            bool boundaryAdded = false;
+                            try
+                            {
+                                currentSpace.AppendEntity(detailBoundary);
+                                transaction.AddNewlyCreatedDBObject(detailBoundary, true);
+                                boundaryAdded = true;
+                                ApplyXClip(transaction, detailBlock, detailBoundary);
+                            }
+                            finally
+                            {
+                                if (!boundaryAdded && detailBoundary != null && !detailBoundary.IsDisposed)
+                                {
+                                    detailBoundary.Dispose();
+                                }
+                            }
 
                             if (!isFarCallout)
                             {
@@ -496,7 +485,6 @@ namespace Callout.Logic
                             ObjectId dimensionStyleId = CalloutHelpers.EnsureCalloutDimStyle(database, transaction, dimensionScale, styleName);
 
                             BlockReference originalSourceBlock = transaction.GetObject(sourceBlockId, OpenMode.ForRead) as BlockReference;
-                            Curve originalBoundaryCurve = transaction.GetObject(boundaryPolylineId, OpenMode.ForRead) as Curve;
                             {
                                 double dimCollisionOffset = CreateAutoDimensionGeometry(
                                     originalSourceBlock, originalBoundaryCurve, mathTransform,
@@ -575,7 +563,6 @@ namespace Callout.Logic
                             }
                         }
                         transaction.Commit();
-                        calloutInserted = true;
                     }
 
                     if (isFarCallout && !_newTitleBubbleId.IsNull && !_newSourceBubbleId.IsNull)
@@ -594,35 +581,213 @@ namespace Callout.Logic
             }
             finally
             {
-                if (!calloutInserted)
+                if (calloutJig != null)
                 {
-                    EraseUnusedDetailBlock(document, detailContentBlockId);
+                    calloutJig.Dispose();
                 }
                 UndoHelper.End(document);
             }
         }
 
-        private static void EraseUnusedDetailBlock(Document document, ObjectId blockRecordId)
+        private static CalloutJig CreateCalloutJig(
+            Transaction transaction,
+            BlockReference sourceBlock,
+            Curve boundaryCurve,
+            Point3d basePoint,
+            Extents3d originalExtents,
+            bool isFarCallout)
         {
-            if (blockRecordId.IsNull || !blockRecordId.IsValid || blockRecordId.IsErased) return;
+            BlockReference previewBlock = null;
+            Curve previewBoundary = null;
+            List<AttributeReference> previewAttributes = new List<AttributeReference>();
 
             try
             {
-                using (DocumentLock documentLock = document.LockDocument())
-                using (Transaction transaction = document.Database.TransactionManager.StartTransaction())
+                previewBlock = sourceBlock.Clone() as BlockReference;
+                previewBoundary = boundaryCurve.Clone() as Curve;
+                if (previewBlock == null || previewBoundary == null)
                 {
-                    BlockTableRecord blockRecord = transaction.GetObject(blockRecordId, OpenMode.ForWrite, false, true) as BlockTableRecord;
-                    if (blockRecord != null && !blockRecord.IsErased && blockRecord.GetBlockReferenceIds(true, false).Count == 0)
+                    throw new InvalidOperationException("Không thể tạo dữ liệu xem trước cho chi tiết trích.");
+                }
+
+                foreach (ObjectId attributeId in sourceBlock.AttributeCollection)
+                {
+                    if (attributeId.IsNull || attributeId.IsErased) continue;
+
+                    AttributeReference sourceAttribute = transaction.GetObject(attributeId, OpenMode.ForRead) as AttributeReference;
+                    AttributeReference previewAttribute = sourceAttribute?.Clone() as AttributeReference;
+                    if (previewAttribute != null)
                     {
-                        blockRecord.Erase();
+                        previewAttributes.Add(previewAttribute);
                     }
-                    transaction.Commit();
+                }
+
+                Point2dCollection clipBoundaryPoints = CreateClipBoundaryPoints(boundaryCurve, Matrix3d.Identity);
+                CalloutJig jig = new CalloutJig(
+                    previewBlock,
+                    previewBoundary,
+                    previewAttributes,
+                    clipBoundaryPoints,
+                    basePoint,
+                    originalExtents,
+                    isFarCallout);
+
+                previewBlock = null;
+                previewBoundary = null;
+                previewAttributes = null;
+                return jig;
+            }
+            finally
+            {
+                if (previewBlock != null && !previewBlock.IsDisposed)
+                {
+                    previewBlock.Dispose();
+                }
+
+                if (previewBoundary != null && !previewBoundary.IsDisposed)
+                {
+                    previewBoundary.Dispose();
+                }
+
+                if (previewAttributes != null)
+                {
+                    foreach (AttributeReference attribute in previewAttributes)
+                    {
+                        if (attribute != null && !attribute.IsDisposed)
+                        {
+                            attribute.Dispose();
+                        }
+                    }
                 }
             }
-            catch (System.Exception ex)
+        }
+
+        private static ObjectId DeepCloneBlockReference(Database database, ObjectId sourceId, ObjectId ownerId)
+        {
+            if (sourceId.IsNull || !sourceId.IsValid || sourceId.IsErased)
             {
-                document.Editor.WriteMessage($"\n[Callout] Could not clean up unused detail block: {ex.Message}");
+                throw new ArgumentException("ObjectId nguồn không hợp lệ.", nameof(sourceId));
             }
+
+            ObjectIdCollection sourceIds = new ObjectIdCollection();
+            sourceIds.Add(sourceId);
+
+            using (IdMapping idMapping = new IdMapping())
+            {
+                database.DeepCloneObjects(sourceIds, ownerId, idMapping, false);
+                IdPair idPair = idMapping.Lookup(sourceId);
+                if (!idPair.IsCloned || idPair.Value.IsNull || !idPair.Value.IsValid)
+                {
+                    throw new InvalidOperationException("AutoCAD không trả về đối tượng đã deep-clone.");
+                }
+
+                return idPair.Value;
+            }
+        }
+
+        private static Polyline CreateBoundaryPolyline(
+            Curve sourceBoundary,
+            Matrix3d transform,
+            ObjectId layerId)
+        {
+            List<Point3d> samplePoints = CreateBoundarySamplePoints(sourceBoundary, transform);
+            if (!TryGetPlanarElevation(samplePoints, out double elevation))
+            {
+                throw new InvalidOperationException("Khung trích không còn đồng phẳng sau khi biến đổi.");
+            }
+
+            Point2dCollection points = CreateClipBoundaryPoints(samplePoints);
+            Polyline boundary = new Polyline(points.Count);
+
+            try
+            {
+                boundary.SetDatabaseDefaults();
+                boundary.SetPropertiesFrom(sourceBoundary);
+                boundary.LayerId = layerId;
+                boundary.Elevation = elevation;
+
+                for (int i = 0; i < points.Count; i++)
+                {
+                    boundary.AddVertexAt(i, points[i], 0.0, 0.0, 0.0);
+                }
+
+                boundary.Closed = true;
+                return boundary;
+            }
+            catch
+            {
+                boundary.Dispose();
+                throw;
+            }
+        }
+
+        private static Point2dCollection CreateClipBoundaryPoints(Curve boundaryCurve, Matrix3d transform)
+        {
+            return CreateClipBoundaryPoints(CreateBoundarySamplePoints(boundaryCurve, transform));
+        }
+
+        private static List<Point3d> CreateBoundarySamplePoints(Curve boundaryCurve, Matrix3d transform)
+        {
+            List<Point3d> points = new List<Point3d>();
+
+            if (boundaryCurve is Polyline polyline && !polyline.HasBulges)
+            {
+                for (int i = 0; i < polyline.NumberOfVertices; i++)
+                {
+                    points.Add(polyline.GetPoint3dAt(i).TransformBy(transform));
+                }
+            }
+            else
+            {
+                double startParameter = boundaryCurve.StartParam;
+                double endParameter = boundaryCurve.EndParam;
+                const int segmentCount = 72;
+
+                for (int i = 0; i < segmentCount; i++)
+                {
+                    double ratio = (double)i / segmentCount;
+                    double parameter = startParameter + ((endParameter - startParameter) * ratio);
+                    points.Add(boundaryCurve.GetPointAtParameter(parameter).TransformBy(transform));
+                }
+            }
+
+            if (points.Count < 3)
+            {
+                throw new InvalidOperationException("Khung trích phải tạo được ít nhất ba điểm clip.");
+            }
+
+            return points;
+        }
+
+        private static Point2dCollection CreateClipBoundaryPoints(IReadOnlyList<Point3d> samplePoints)
+        {
+            Point2dCollection points = new Point2dCollection();
+            for (int i = 0; i < samplePoints.Count; i++)
+            {
+                Point3d point = samplePoints[i];
+                points.Add(new Point2d(point.X, point.Y));
+            }
+
+            return points;
+        }
+
+        private static bool TryGetPlanarElevation(Curve boundaryCurve, Matrix3d transform, out double elevation)
+        {
+            return TryGetPlanarElevation(CreateBoundarySamplePoints(boundaryCurve, transform), out elevation);
+        }
+
+        private static bool TryGetPlanarElevation(IReadOnlyList<Point3d> samplePoints, out double elevation)
+        {
+            elevation = samplePoints.Count > 0 ? samplePoints[0].Z : 0.0;
+            for (int i = 1; i < samplePoints.Count; i++)
+            {
+                if (Math.Abs(samplePoints[i].Z - elevation) > ClipPlanarityTolerance)
+                {
+                    return false;
+                }
+            }
+
+            return samplePoints.Count >= 3;
         }
 
         private static void ExtractGeometryRecursive(ObjectId blockRecordId, Matrix3d matrix, Extents3d clipBox, Matrix3d finalTransform, List<Point3d> validPoints, List<Arc> validArcs, List<Circle> validCircles, Transaction transaction, HashSet<ObjectId> activeBlockRecords)
@@ -1227,51 +1392,89 @@ namespace Callout.Logic
 
         private static void ApplyXClip(Transaction transaction, BlockReference blockReference, Curve boundaryCurve)
         {
-            blockReference.CreateExtensionDictionary();
-            using (DBDictionary extensionDictionary = (DBDictionary)transaction.GetObject(blockReference.ExtensionDictionary, OpenMode.ForWrite))
+            if (blockReference.ExtensionDictionary.IsNull)
             {
-                extensionDictionary.TreatElementsAsHard = true;
+                blockReference.CreateExtensionDictionary();
+            }
 
-                using (DBDictionary filterDictionary = new DBDictionary { TreatElementsAsHard = true })
+            DBDictionary extensionDictionary = transaction.GetObject(
+                blockReference.ExtensionDictionary,
+                OpenMode.ForWrite,
+                false,
+                true) as DBDictionary;
+            if (extensionDictionary == null)
+            {
+                throw new InvalidOperationException("Không thể mở extension dictionary của block chi tiết.");
+            }
+
+            extensionDictionary.TreatElementsAsHard = true;
+
+            DBDictionary filterDictionary;
+            if (extensionDictionary.Contains(FilterDictionaryName))
+            {
+                filterDictionary = transaction.GetObject(
+                    extensionDictionary.GetAt(FilterDictionaryName),
+                    OpenMode.ForWrite,
+                    false,
+                    true) as DBDictionary;
+                if (filterDictionary == null)
                 {
-                    extensionDictionary.SetAt(FilterDictionaryName, filterDictionary);
-                    transaction.AddNewlyCreatedDBObject(filterDictionary, true);
+                    throw new InvalidOperationException("ACAD_FILTER của block chi tiết không phải dictionary hợp lệ.");
+                }
+            }
+            else
+            {
+                DBDictionary newFilterDictionary = new DBDictionary { TreatElementsAsHard = true };
+                try
+                {
+                    extensionDictionary.SetAt(FilterDictionaryName, newFilterDictionary);
+                    transaction.AddNewlyCreatedDBObject(newFilterDictionary, true);
+                    filterDictionary = newFilterDictionary;
+                    newFilterDictionary = null;
+                }
+                finally
+                {
+                    if (newFilterDictionary != null && !newFilterDictionary.IsDisposed)
+                    {
+                        newFilterDictionary.Dispose();
+                    }
+                }
+            }
 
-                    Matrix3d worldToBlockMatrix = blockReference.BlockTransform.Inverse();
-                    Point2dCollection points = new Point2dCollection();
-                    
-                    if (boundaryCurve is Polyline poly && !poly.HasBulges)
-                    {
-                        for (int i = 0; i < poly.NumberOfVertices; i++)
-                        {
-                            Point3d pointInBlock = poly.GetPoint3dAt(i).TransformBy(worldToBlockMatrix);
-                            points.Add(new Point2d(pointInBlock.X, pointInBlock.Y));
-                        }
-                    }
-                    else
-                    {
-                        double startParam = boundaryCurve.StartParam;
-                        double endParam = boundaryCurve.EndParam;
-                        int numSegments = 72; // Create a smooth 72-segment polygon approximation
-                        for (int i = 0; i < numSegments; i++)
-                        {
-                            double t = (double)i / numSegments;
-                            double param = startParam + (endParam - startParam) * t;
-                            Point3d pt = boundaryCurve.GetPointAtParameter(param).TransformBy(worldToBlockMatrix);
-                            points.Add(new Point2d(pt.X, pt.Y));
-                        }
-                        
-                        // Close the loop explicitly just in case for the filter definition
-                        Point3d firstPt = boundaryCurve.GetPointAtParameter(startParam).TransformBy(worldToBlockMatrix);
-                        points.Add(new Point2d(firstPt.X, firstPt.Y));
-                    }
+            filterDictionary.TreatElementsAsHard = true;
+            if (filterDictionary.Contains(SpatialFilterName))
+            {
+                filterDictionary.Remove(SpatialFilterName);
+            }
 
-                    SpatialFilterDefinition spatialFilterDefinition = new SpatialFilterDefinition(points, Vector3d.ZAxis, 0.0, 0.0, 0.0, true);
-                    using (SpatialFilter spatialFilter = new SpatialFilter { Definition = spatialFilterDefinition })
-                    {
-                        filterDictionary.SetAt(SpatialFilterName, spatialFilter);
-                        transaction.AddNewlyCreatedDBObject(spatialFilter, true);
-                    }
+            Matrix3d worldToBlockMatrix = blockReference.BlockTransform.Inverse();
+            List<Point3d> samplePoints = CreateBoundarySamplePoints(boundaryCurve, worldToBlockMatrix);
+            if (!TryGetPlanarElevation(samplePoints, out double clipElevation))
+            {
+                throw new InvalidOperationException("Khung XClip không đồng phẳng trong hệ tọa độ block.");
+            }
+
+            Point2dCollection points = CreateClipBoundaryPoints(samplePoints);
+            SpatialFilterDefinition spatialFilterDefinition = new SpatialFilterDefinition(
+                points,
+                Vector3d.ZAxis,
+                clipElevation,
+                0.0,
+                0.0,
+                true);
+
+            SpatialFilter spatialFilter = new SpatialFilter { Definition = spatialFilterDefinition };
+            try
+            {
+                filterDictionary.SetAt(SpatialFilterName, spatialFilter);
+                transaction.AddNewlyCreatedDBObject(spatialFilter, true);
+                spatialFilter = null;
+            }
+            finally
+            {
+                if (spatialFilter != null && !spatialFilter.IsDisposed)
+                {
+                    spatialFilter.Dispose();
                 }
             }
         }

@@ -1,30 +1,52 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Geometry;
+using Autodesk.AutoCAD.GraphicsInterface;
 using Callout.Services;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
 namespace Callout.Jigs
 {
-    public class CalloutJig : DrawJig
+    public sealed class CalloutJig : DrawJig, IDisposable
     {
-        public BlockReference JigRef { get; private set; }
         public Point3d CurrentPosition { get; private set; }
         public Matrix3d MathTransform { get; private set; }
 
+        private BlockReference _previewBlock;
+        private Curve _previewBoundary;
+        private List<AttributeReference> _previewAttributes;
+        private readonly Point2dCollection _clipBoundaryPoints;
         private readonly Point3d _basePoint;
         private readonly Extents3d _originalExtents;
         private readonly bool _isFarCallout;
+        private bool _disposed;
 
-        public CalloutJig(BlockReference jigRef, Point3d basePoint, Extents3d origExt, bool isFarCallout = false)
+        public CalloutJig(
+            BlockReference previewBlock,
+            Curve previewBoundary,
+            List<AttributeReference> previewAttributes,
+            Point2dCollection clipBoundaryPoints,
+            Point3d basePoint,
+            Extents3d originalExtents,
+            bool isFarCallout = false)
         {
-            JigRef = jigRef;
+            _previewBlock = previewBlock ?? throw new ArgumentNullException(nameof(previewBlock));
+            _previewBoundary = previewBoundary ?? throw new ArgumentNullException(nameof(previewBoundary));
+            _previewAttributes = previewAttributes ?? new List<AttributeReference>();
+            _clipBoundaryPoints = clipBoundaryPoints ?? throw new ArgumentNullException(nameof(clipBoundaryPoints));
+            if (_clipBoundaryPoints.Count < 3)
+            {
+                throw new ArgumentException("Clip boundary must contain at least three points.", nameof(clipBoundaryPoints));
+            }
+
             _basePoint = basePoint;
-            _originalExtents = origExt;
+            _originalExtents = originalExtents;
             CurrentPosition = basePoint;
             _isFarCallout = isFarCallout;
+            MathTransform = Matrix3d.Identity;
         }
 
         protected override SamplerStatus Sampler(JigPrompts prompts)
@@ -50,8 +72,9 @@ namespace Callout.Jigs
 
                 return SamplerStatus.NoChange;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine($"[Callout] Jig sampler failed: {ex}");
                 return SamplerStatus.Cancel;
             }
         }
@@ -60,17 +83,83 @@ namespace Callout.Jigs
         {
             try
             {
+                if (_disposed || _previewBlock == null || _previewBoundary == null)
+                {
+                    return false;
+                }
+
                 double scale = JigInputHandler.CurrentScale;
                 if (double.IsNaN(scale) || double.IsInfinity(scale) || scale <= 0.0)
                 {
                     return false;
                 }
 
-                JigRef.Position = CurrentPosition;
-                JigRef.ScaleFactors = new Scale3d(scale);
-
                 MathTransform = Matrix3d.Scaling(scale, CurrentPosition) * Matrix3d.Displacement(_basePoint.GetVectorTo(CurrentPosition));
-                draw.Geometry.Draw(JigRef);
+
+                bool modelTransformPushed = draw.Geometry.PushModelTransform(MathTransform);
+                if (!modelTransformPushed)
+                {
+                    return false;
+                }
+
+                ClipBoundary clipBoundary = null;
+                bool clipBoundaryPushed = false;
+                try
+                {
+                    clipBoundary = CreateClipBoundary();
+                    clipBoundaryPushed = draw.Geometry.PushClipBoundary(clipBoundary);
+                    if (clipBoundaryPushed)
+                    {
+                        draw.Geometry.Draw(_previewBlock);
+                        foreach (AttributeReference attribute in _previewAttributes)
+                        {
+                            if (attribute != null && !attribute.IsDisposed)
+                            {
+                                draw.Geometry.Draw(attribute);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        System.Diagnostics.Debug.WriteLine("[Callout] PushClipBoundary failed; full block preview was suppressed.");
+                    }
+                }
+                finally
+                {
+                    try
+                    {
+                        draw.Geometry.PopModelTransform();
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            if (clipBoundaryPushed)
+                            {
+                                draw.Geometry.PopClipBoundary();
+                            }
+                        }
+                        finally
+                        {
+                            clipBoundary?.Dispose();
+                        }
+                    }
+                }
+
+                bool boundaryTransformPushed = draw.Geometry.PushModelTransform(MathTransform);
+                if (!boundaryTransformPushed)
+                {
+                    return false;
+                }
+
+                try
+                {
+                    draw.Geometry.Draw(_previewBoundary);
+                }
+                finally
+                {
+                    draw.Geometry.PopModelTransform();
+                }
 
                 double viewSize = (double)AcadApp.GetSystemVariable("VIEWSIZE");
                 if (double.IsNaN(viewSize) || double.IsInfinity(viewSize) || viewSize <= 0.0)
@@ -111,9 +200,66 @@ namespace Callout.Jigs
 
                 return true;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine($"[Callout] Jig preview failed: {ex}");
                 return false;
+            }
+        }
+
+        private ClipBoundary CreateClipBoundary()
+        {
+            ClipBoundary clipBoundary = new ClipBoundary();
+            try
+            {
+                clipBoundary.NormalVector = Vector3d.ZAxis;
+                clipBoundary.Point = Point3d.Origin;
+                clipBoundary.TransformToClipSpace = Matrix3d.Identity;
+                clipBoundary.TransformInverseBlockRefXForm = _previewBlock.BlockTransform.Inverse();
+                clipBoundary.ClippingFront = false;
+                clipBoundary.ClippingBack = false;
+                clipBoundary.FrontClipZ = 0.0;
+                clipBoundary.BackClipZ = 0.0;
+                clipBoundary.DrawBoundary = false;
+                clipBoundary.SetAptPoints(_clipBoundaryPoints);
+                return clipBoundary;
+            }
+            catch
+            {
+                clipBoundary.Dispose();
+                throw;
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+
+            _disposed = true;
+
+            if (_previewBlock != null && !_previewBlock.IsDisposed)
+            {
+                _previewBlock.Dispose();
+            }
+            _previewBlock = null;
+
+            if (_previewBoundary != null && !_previewBoundary.IsDisposed)
+            {
+                _previewBoundary.Dispose();
+            }
+            _previewBoundary = null;
+
+            if (_previewAttributes != null)
+            {
+                foreach (AttributeReference attribute in _previewAttributes)
+                {
+                    if (attribute != null && !attribute.IsDisposed)
+                    {
+                        attribute.Dispose();
+                    }
+                }
+                _previewAttributes.Clear();
+                _previewAttributes = null;
             }
         }
     }
