@@ -25,73 +25,24 @@ namespace Callout.Logic
         private const string SpatialFilterName = "SPATIAL";
         private const double ClipPlanarityTolerance = 1.0e-6;
 
-        private static readonly Dictionary<Database, Dictionary<ObjectId, List<CalloutBubblePair>>> _blockCalloutBubbles = new Dictionary<Database, Dictionary<ObjectId, List<CalloutBubblePair>>>();
-        private static bool _documentDestroyedHandlerAttached;
-
         private static Callout.UI.CalloutManagerWindow _managerWindow = null;
-
-        // Cleanup disposed Database entries khi bản vẽ đóng — tránh memory leak static dict
-        static CalloutCoreLogic()
-        {
-            try
-            {
-                Application.DocumentManager.DocumentDestroyed += DocumentManager_DocumentDestroyed;
-                _documentDestroyedHandlerAttached = true;
-            }
-            catch (System.Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[Callout] Không đăng ký DocumentDestroyed: {ex}");
-            }
-        }
 
         public static void Terminate()
         {
-            if (!_documentDestroyedHandlerAttached) return;
-
             try
             {
-                Application.DocumentManager.DocumentDestroyed -= DocumentManager_DocumentDestroyed;
-                _documentDestroyedHandlerAttached = false;
-                _blockCalloutBubbles.Clear();
+                _managerWindow?.Close();
+                _managerWindow = null;
             }
             catch (System.Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[Callout] Không hủy DocumentDestroyed: {ex}");
+                System.Diagnostics.Debug.WriteLine($"[Callout] Không đóng được cửa sổ quản lý: {ex}");
             }
         }
 
-        private static void DocumentManager_DocumentDestroyed(object sender, DocumentDestroyedEventArgs e)
+        public static Dictionary<ObjectId, List<CalloutBubblePair>> GetCalloutMappings(Database database, Transaction transaction)
         {
-            try
-            {
-                var keysToRemove = new List<Database>();
-                foreach (var key in _blockCalloutBubbles.Keys)
-                {
-                    if (key == null || key.IsDisposed)
-                    {
-                        keysToRemove.Add(key);
-                    }
-                }
-
-                foreach (var key in keysToRemove)
-                {
-                    _blockCalloutBubbles.Remove(key);
-                }
-            }
-            catch (System.Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[Callout] Dọn mapping khi đóng document lỗi: {ex}");
-            }
-        }
-
-        public static Dictionary<ObjectId, List<CalloutBubblePair>> GetCalloutMappings(Database db)
-        {
-            if (db == null) return new Dictionary<ObjectId, List<CalloutBubblePair>>();
-            if (!_blockCalloutBubbles.ContainsKey(db))
-            {
-                _blockCalloutBubbles[db] = new Dictionary<ObjectId, List<CalloutBubblePair>>();
-            }
-            return _blockCalloutBubbles[db];
+            return CalloutMappingRepository.Read(database, transaction);
         }
 
 
@@ -219,7 +170,6 @@ namespace Callout.Logic
                 
                 int tempCounter = 1;
                 string viewNumberValue = "";
-                ObjectId _newTitleBubbleId = ObjectId.Null;
                 ObjectId _newSourceBubbleId = ObjectId.Null;
 
                 ObjectId sourceLayerId = ObjectId.Null;
@@ -251,18 +201,16 @@ namespace Callout.Logic
                         if (isFarCallout)
                         {
                             tempCounter = 1;
-                            var mappings = GetCalloutMappings(database);
+                            var mappings = GetCalloutMappings(database, transaction);
                             if (mappings.TryGetValue(sourceBlockId, out List<CalloutBubblePair> bubbleList))
                             {
                                 List<int> usedNumbers = new List<int>();
-                                List<CalloutBubblePair> validBubbles = new List<CalloutBubblePair>();
                                 foreach (CalloutBubblePair pair in bubbleList)
                                 {
-                                    if (pair.TitleBubbleId.IsErased || !pair.TitleBubbleId.IsValid || pair.TitleBubbleId.IsNull) continue;
+                                    if (pair.TitleBubbleId.IsNull || !pair.TitleBubbleId.IsValid || pair.TitleBubbleId.IsErased) continue;
                                     BlockReference bRef = transaction.GetObject(pair.TitleBubbleId, OpenMode.ForRead, false, true) as BlockReference;
                                     if (bRef != null && !bRef.IsErased)
                                     {
-                                        validBubbles.Add(pair);
                                         string vn = CalloutHelpers.GetAttributeValue(transaction, bRef, "VIEWNUMBER");
                                         if (!string.IsNullOrEmpty(vn) && vn.StartsWith("CT", System.StringComparison.OrdinalIgnoreCase)) 
                                         {
@@ -274,7 +222,6 @@ namespace Callout.Logic
                                         }
                                     }
                                 }
-                                mappings[sourceBlockId] = validBubbles;
 
                                 while (usedNumbers.Contains(tempCounter))
                                 {
@@ -298,7 +245,6 @@ namespace Callout.Logic
                             sourceBlock,
                             boundaryCurve,
                             basePoint,
-                            originalExtents,
                             isFarCallout);
                     }
                     transaction.Commit();
@@ -419,12 +365,24 @@ namespace Callout.Logic
                             if (!isFarCallout)
                             {
                                 double dotDiameter = 1.5 * sourceDimensionScale;
-                                var leaderEntities = CalloutGeometryService.CreateSmartLeader(originalExtents, mathTransform, dotDiameter);
-                                foreach (Entity ent in leaderEntities)
+                                var leaderEntities = CalloutGeometryService.CreateSmartLeader(
+                                    CreateBoundarySamplePoints(originalBoundaryCurve, Matrix3d.Identity), mathTransform, dotDiameter, database);
+                                try
                                 {
-                                    ent.LayerId = sourceLayerId;
-                                    currentSpace.AppendEntity(ent);
-                                    transaction.AddNewlyCreatedDBObject(ent, true);
+                                    foreach (Entity ent in leaderEntities)
+                                    {
+                                        ent.LayerId = sourceLayerId;
+                                        currentSpace.AppendEntity(ent);
+                                        transaction.AddNewlyCreatedDBObject(ent, true);
+                                    }
+                                    if (leaderEntities.Count == 3)
+                                        CalloutLeaderLinks.Attach(transaction, (Polyline)leaderEntities[0],
+                                            (Polyline)leaderEntities[1], (Polyline)leaderEntities[2], dotDiameter);
+                                }
+                                finally
+                                {
+                                    foreach (Entity ent in leaderEntities)
+                                        if (!ent.IsDisposed && ent.ObjectId.IsNull) ent.Dispose();
                                 }
                             }
                             else
@@ -556,7 +514,7 @@ namespace Callout.Logic
                                                 { "SHEETNUMBER", "" }
                                             };
                                             CalloutHelpers.ApplyDictionaryAttributes(transaction, titleBubble, dict);
-                                            _newTitleBubbleId = titleBubble.ObjectId;
+                                            CalloutMappingRepository.Save(transaction, titleBubble, sourceBlockId, _newSourceBubbleId);
                                         }
                                     }
                                 }
@@ -565,14 +523,12 @@ namespace Callout.Logic
                         transaction.Commit();
                     }
 
-                    if (isFarCallout && !_newTitleBubbleId.IsNull && !_newSourceBubbleId.IsNull)
-                    {
-                        var mappings = GetCalloutMappings(database);
-                        if (!mappings.ContainsKey(sourceBlockId))
-                            mappings[sourceBlockId] = new List<CalloutBubblePair>();
-                        mappings[sourceBlockId].Add(new CalloutBubblePair { SourceBubbleId = _newSourceBubbleId, TitleBubbleId = _newTitleBubbleId });
-                    }
                 }
+            }
+            catch (InvalidOperationException ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Callout] Extraction rejected in {document.Name}: {ex}");
+                editor.WriteMessage($"\n[Callout] {ex.Message}");
             }
             catch (System.Exception ex)
             {
@@ -594,7 +550,6 @@ namespace Callout.Logic
             BlockReference sourceBlock,
             Curve boundaryCurve,
             Point3d basePoint,
-            Extents3d originalExtents,
             bool isFarCallout)
         {
             BlockReference previewBlock = null;
@@ -604,7 +559,7 @@ namespace Callout.Logic
             try
             {
                 previewBlock = sourceBlock.Clone() as BlockReference;
-                previewBoundary = boundaryCurve.Clone() as Curve;
+                previewBoundary = CreateBoundaryPolyline(boundaryCurve, Matrix3d.Identity, boundaryCurve.LayerId);
                 if (previewBlock == null || previewBoundary == null)
                 {
                     throw new InvalidOperationException("Không thể tạo dữ liệu xem trước cho chi tiết trích.");
@@ -629,7 +584,6 @@ namespace Callout.Logic
                     previewAttributes,
                     clipBoundaryPoints,
                     basePoint,
-                    originalExtents,
                     isFarCallout);
 
                 previewBlock = null;
@@ -730,12 +684,18 @@ namespace Callout.Logic
         {
             List<Point3d> points = new List<Point3d>();
 
-            if (boundaryCurve is Polyline polyline && !polyline.HasBulges)
+            if (boundaryCurve is Polyline polyline)
             {
-                for (int i = 0; i < polyline.NumberOfVertices; i++)
+                int segmentCount = polyline.Closed ? polyline.NumberOfVertices : polyline.NumberOfVertices - 1;
+                for (int i = 0; i < segmentCount; i++)
                 {
-                    points.Add(polyline.GetPoint3dAt(i).TransformBy(transform));
+                    // Preserve every original corner, sampling only curved segments.
+                    int steps = Math.Abs(polyline.GetBulgeAt(i)) < 1.0e-12 ? 1 : 72;
+                    for (int j = 0; j < steps; j++)
+                        points.Add(polyline.GetPointAtParameter(i + (double)j / steps).TransformBy(transform));
                 }
+                if (!polyline.Closed && polyline.NumberOfVertices > 0)
+                    points.Add(polyline.EndPoint.TransformBy(transform));
             }
             else
             {
@@ -751,6 +711,10 @@ namespace Callout.Logic
                 }
             }
 
+            if (boundaryCurve.Closed && points.Count > 1 &&
+                points[0].DistanceTo(points[points.Count - 1]) <= ClipPlanarityTolerance)
+                points.RemoveAt(points.Count - 1);
+
             if (points.Count < 3)
             {
                 throw new InvalidOperationException("Khung trích phải tạo được ít nhất ba điểm clip.");
@@ -761,6 +725,7 @@ namespace Callout.Logic
 
         private static Point2dCollection CreateClipBoundaryPoints(IReadOnlyList<Point3d> samplePoints)
         {
+            CreateClipPolygon(samplePoints);
             Point2dCollection points = new Point2dCollection();
             for (int i = 0; i < samplePoints.Count; i++)
             {
@@ -769,6 +734,11 @@ namespace Callout.Logic
             }
 
             return points;
+        }
+
+        private static CalloutClipPolygon CreateClipPolygon(IReadOnlyList<Point3d> samplePoints)
+        {
+            return new CalloutClipPolygon(samplePoints.Select(point => new ClipPoint(point.X, point.Y)));
         }
 
         private static bool TryGetPlanarElevation(Curve boundaryCurve, Matrix3d transform, out double elevation)
@@ -781,174 +751,89 @@ namespace Callout.Logic
             elevation = samplePoints.Count > 0 ? samplePoints[0].Z : 0.0;
             for (int i = 1; i < samplePoints.Count; i++)
             {
-                if (Math.Abs(samplePoints[i].Z - elevation) > ClipPlanarityTolerance)
+                if (double.IsNaN(samplePoints[i].Z) || double.IsInfinity(samplePoints[i].Z) ||
+                    Math.Abs(samplePoints[i].Z - elevation) > ClipPlanarityTolerance)
                 {
                     return false;
                 }
             }
 
-            return samplePoints.Count >= 3;
+            return samplePoints.Count >= 3 && !double.IsNaN(elevation) && !double.IsInfinity(elevation);
         }
 
-        private static void ExtractGeometryRecursive(ObjectId blockRecordId, Matrix3d matrix, Extents3d clipBox, Matrix3d finalTransform, List<Point3d> validPoints, List<Arc> validArcs, List<Circle> validCircles, Transaction transaction, HashSet<ObjectId> activeBlockRecords)
+        private static void ExtractGeometryRecursive(
+            ObjectId blockRecordId, Matrix3d matrix, CalloutClipPolygon clipPolygon, Matrix3d finalTransform,
+            List<Point3d> validPoints, List<Arc> validArcs, List<Circle> validCircles,
+            Transaction transaction, HashSet<ObjectId> activeBlockRecords)
         {
-            if (blockRecordId.IsNull || blockRecordId.IsErased || !activeBlockRecords.Add(blockRecordId))
-            {
-                return;
-            }
-
+            if (blockRecordId.IsNull || blockRecordId.IsErased || !activeBlockRecords.Add(blockRecordId)) return;
             try
             {
                 BlockTableRecord blockRecord = (BlockTableRecord)transaction.GetObject(blockRecordId, OpenMode.ForRead);
                 foreach (ObjectId entityId in blockRecord)
                 {
+                    if (entityId.IsErased) continue;
                     Entity entity = transaction.GetObject(entityId, OpenMode.ForRead) as Entity;
                     if (entity == null || !entity.Visible) continue;
-
                     if (entity is BlockReference blockReference)
                     {
-                        Matrix3d newMatrix = matrix * blockReference.BlockTransform;
-                        // BlockTableRecord là definition đã evaluate của dynamic block.
-                        // DynamicBlockTableRecord là authoring definition và có thể không phản ánh trạng thái hiển thị hiện tại.
-                        ObjectId targetRecordId = blockReference.BlockTableRecord;
-                        ExtractGeometryRecursive(targetRecordId, newMatrix, clipBox, finalTransform, validPoints, validArcs, validCircles, transaction, activeBlockRecords);
+                        ExtractGeometryRecursive(blockReference.BlockTableRecord, matrix * blockReference.BlockTransform,
+                            clipPolygon, finalTransform, validPoints, validArcs, validCircles, transaction, activeBlockRecords);
+                        continue;
                     }
-                    else if (entity is Line line)
+
+                    Curve curve = entity as Curve;
+                    if (!(curve is Line || curve is Polyline || curve is Polyline2d ||
+                          curve is Circle || curve is Arc || curve is Ellipse) ||
+                        !AddCurveClipPoints(curve, matrix, clipPolygon, finalTransform, validPoints)) continue;
+
+                    // A non-uniformly scaled circle/arc is elliptical. Its sampled
+                    // linear dimensions remain valid; never emit a false R/diameter
+                    // or TransformBy a Circle/Arc with a non-uniform matrix.
+                    if (!IsUniformTransform(matrix)) continue;
+                    if (curve is Circle circle)
                     {
-                        AddPointIfInsideClip(line.StartPoint.TransformBy(matrix), clipBox, finalTransform, validPoints);
-                        AddPointIfInsideClip(line.EndPoint.TransformBy(matrix), clipBox, finalTransform, validPoints);
-                    }
-                    else if (entity is Polyline polyline)
-                    {
-                        for (int i = 0; i < polyline.NumberOfVertices; i++)
+                        Circle copy = (Circle)circle.Clone();
+                        try
                         {
-                            AddPointIfInsideClip(polyline.GetPoint3dAt(i).TransformBy(matrix), clipBox, finalTransform, validPoints);
+                            copy.TransformBy(finalTransform * matrix);
+                            validCircles.Add(copy);
+                            copy = null;
                         }
-                        // Phát hiện Polyline tròn (2 vertices + closed + bulge ≈ 1.0 = Circle)
+                        finally { copy?.Dispose(); }
+                    }
+                    else if (curve is Arc arc)
+                    {
+                        Arc copy = (Arc)arc.Clone();
+                        try
+                        {
+                            copy.TransformBy(finalTransform * matrix);
+                            validArcs.Add(copy);
+                            copy = null;
+                        }
+                        finally { copy?.Dispose(); }
+                    }
+                    else if (curve is Polyline polyline)
+                    {
                         if (polyline.Closed && polyline.NumberOfVertices == 2 &&
                             Math.Abs(Math.Abs(polyline.GetBulgeAt(0)) - 1.0) < 0.01 &&
                             Math.Abs(Math.Abs(polyline.GetBulgeAt(1)) - 1.0) < 0.01)
                         {
-                            try
+                            using (CircularArc3d segment = polyline.GetArcSegmentAt(0))
                             {
-                                CircularArc2d seg0 = polyline.GetArcSegment2dAt(0);
-                                Point3d centerWcs = new Point3d(seg0.Center.X, seg0.Center.Y, 0).TransformBy(matrix);
-                                double r = seg0.Radius * matrix.GetScale();
-                                if (IsInsideClip(centerWcs, clipBox) ||
-                                    IsInsideClip(centerWcs + new Vector3d(r, 0, 0), clipBox) ||
-                                    IsInsideClip(centerWcs + new Vector3d(-r, 0, 0), clipBox))
+                                Circle copy = new Circle(segment.Center, segment.Normal, segment.Radius);
+                                try
                                 {
-                                    Circle syntheticCircle = null;
-                                    try
-                                    {
-                                        syntheticCircle = new Circle(new Point3d(seg0.Center.X, seg0.Center.Y, 0), Vector3d.ZAxis, seg0.Radius);
-                                        syntheticCircle.SetDatabaseDefaults();
-                                        syntheticCircle.TransformBy(finalTransform * matrix);
-                                        validCircles.Add(syntheticCircle);
-                                        syntheticCircle = null;
-                                    }
-                                    finally
-                                    {
-                                        if (syntheticCircle != null && !syntheticCircle.IsDisposed) syntheticCircle.Dispose();
-                                    }
+                                    copy.TransformBy(finalTransform * matrix);
+                                    validCircles.Add(copy);
+                                    copy = null;
                                 }
-                            }
-                            catch (System.Exception ex)
-                            {
-                                System.Diagnostics.Debug.WriteLine($"[Callout] Không tạo được circle từ polyline: {ex}");
+                                finally { copy?.Dispose(); }
                             }
                         }
                         else
                         {
-                            // Tách arc segments từ Polyline có bulge
-                            ExtractArcsFromPolyline(polyline, matrix, clipBox, finalTransform, validArcs);
-                        }
-                    }
-                    else if (entity is Polyline2d polyline2d)
-                    {
-                        foreach (ObjectId vertexId in polyline2d)
-                        {
-                            Vertex2d vertex = transaction.GetObject(vertexId, OpenMode.ForRead) as Vertex2d;
-                            if (vertex != null) AddPointIfInsideClip(vertex.Position.TransformBy(matrix), clipBox, finalTransform, validPoints);
-                        }
-                    }
-                    else if (entity is Circle circle)
-                    {
-                        Point3d centerWcs = circle.Center.TransformBy(matrix);
-                        double r = circle.Radius * matrix.GetScale();
-                        // Quadrant points cho linear dim
-                        Point3d qRight = centerWcs + new Vector3d(r, 0, 0);
-                        Point3d qLeft = centerWcs + new Vector3d(-r, 0, 0);
-                        Point3d qTop = centerWcs + new Vector3d(0, r, 0);
-                        Point3d qBot = centerWcs + new Vector3d(0, -r, 0);
-                        AddPointIfInsideClip(qRight, clipBox, finalTransform, validPoints);
-                        AddPointIfInsideClip(qLeft, clipBox, finalTransform, validPoints);
-                        AddPointIfInsideClip(qTop, clipBox, finalTransform, validPoints);
-                        AddPointIfInsideClip(qBot, clipBox, finalTransform, validPoints);
-
-                        // Thu thập Circle - kiểm tra bất kỳ phần nào nằm trong clip box
-                        if (IsInsideClip(centerWcs, clipBox) || IsInsideClip(qRight, clipBox) ||
-                            IsInsideClip(qLeft, clipBox) || IsInsideClip(qTop, clipBox) || IsInsideClip(qBot, clipBox))
-                        {
-                            Circle clonedCircle = null;
-                            try
-                            {
-                                clonedCircle = circle.Clone() as Circle;
-                                clonedCircle.TransformBy(finalTransform * matrix);
-                                validCircles.Add(clonedCircle);
-                                clonedCircle = null;
-                            }
-                            finally
-                            {
-                                if (clonedCircle != null && !clonedCircle.IsDisposed) clonedCircle.Dispose();
-                            }
-                        }
-                    }
-                    else if (entity is Arc arc)
-                    {
-                        Point3d startWcs = arc.StartPoint.TransformBy(matrix);
-                        Point3d endWcs = arc.EndPoint.TransformBy(matrix);
-                        Point3d midPointWcs = arc.GetPointAtParameter(arc.StartParam + (arc.EndParam - arc.StartParam) / 2.0).TransformBy(matrix);
-                        // Chấp nhận nếu bất kỳ điểm nào (start, mid, end) nằm trong clip box
-                        if (IsInsideClip(midPointWcs, clipBox) || IsInsideClip(startWcs, clipBox) || IsInsideClip(endWcs, clipBox))
-                        {
-                            Arc clonedArc = null;
-                            try
-                            {
-                                clonedArc = arc.Clone() as Arc;
-                                clonedArc.TransformBy(finalTransform * matrix);
-                                validArcs.Add(clonedArc);
-                                clonedArc = null;
-                            }
-                            finally
-                            {
-                                if (clonedArc != null && !clonedArc.IsDisposed) clonedArc.Dispose();
-                            }
-                        }
-                        // Start/End points cho linear dim
-                        AddPointIfInsideClip(startWcs, clipBox, finalTransform, validPoints);
-                        AddPointIfInsideClip(endWcs, clipBox, finalTransform, validPoints);
-                    }
-                    else if (entity is Ellipse ellipse)
-                    {
-                        // Lấy bounding box quadrant points của Ellipse cho linear dim
-                        Point3d centerWcs = ellipse.Center.TransformBy(matrix);
-                        if (IsInsideClip(centerWcs, clipBox))
-                        {
-                            try
-                            {
-                                Extents3d ellipseExtents = ellipse.GeometricExtents;
-                                Point3d eMin = ellipseExtents.MinPoint.TransformBy(matrix);
-                                Point3d eMax = ellipseExtents.MaxPoint.TransformBy(matrix);
-                                AddPointIfInsideClip(new Point3d(eMin.X, centerWcs.Y, 0), clipBox, finalTransform, validPoints);
-                                AddPointIfInsideClip(new Point3d(eMax.X, centerWcs.Y, 0), clipBox, finalTransform, validPoints);
-                                AddPointIfInsideClip(new Point3d(centerWcs.X, eMin.Y, 0), clipBox, finalTransform, validPoints);
-                                AddPointIfInsideClip(new Point3d(centerWcs.X, eMax.Y, 0), clipBox, finalTransform, validPoints);
-                            }
-                            catch (System.Exception ex)
-                            {
-                                System.Diagnostics.Debug.WriteLine($"[Callout] Không đọc được bounds ellipse: {ex}");
-                            }
+                            ExtractArcsFromPolyline(polyline, matrix, clipPolygon, finalTransform, validArcs);
                         }
                     }
                 }
@@ -956,6 +841,132 @@ namespace Callout.Logic
             finally
             {
                 activeBlockRecords.Remove(blockRecordId);
+            }
+        }
+
+        private static bool IsUniformTransform(Matrix3d matrix)
+        {
+            CoordinateSystem3d axes = matrix.CoordinateSystem3d;
+            double length = axes.Xaxis.Length;
+            const double relativeTolerance = 1.0e-8;
+            return length > 0.0 &&
+                Math.Abs(axes.Yaxis.Length - length) <= relativeTolerance * length &&
+                Math.Abs(axes.Zaxis.Length - length) <= relativeTolerance * length &&
+                Math.Abs(axes.Xaxis.DotProduct(axes.Yaxis)) <= relativeTolerance * length * length &&
+                Math.Abs(axes.Xaxis.DotProduct(axes.Zaxis)) <= relativeTolerance * length * length &&
+                Math.Abs(axes.Yaxis.DotProduct(axes.Zaxis)) <= relativeTolerance * length * length;
+        }
+
+        private static bool AddCurveClipPoints(
+            Curve curve, Matrix3d matrix, CalloutClipPolygon polygon, Matrix3d finalTransform, List<Point3d> validPoints)
+        {
+            bool visible = false;
+            if (curve is Polyline polyline)
+            {
+                int count = polyline.Closed ? polyline.NumberOfVertices : polyline.NumberOfVertices - 1;
+                for (int i = 0; i < count; i++)
+                {
+                    bool straight = Math.Abs(polyline.GetBulgeAt(i)) < 1.0e-12;
+                    int steps = straight ? 1 : 72;
+                    Point3d previous = polyline.GetPointAtParameter(i).TransformBy(matrix);
+                    if (validPoints != null) AddPointIfInsideClip(previous, polygon, finalTransform, validPoints);
+                    for (int j = 1; j <= steps; j++)
+                    {
+                        Point3d next = polyline.GetPointAtParameter(i + (double)j / steps).TransformBy(matrix);
+                        visible |= AddClippedSegment(previous, next, polygon, finalTransform, validPoints, straight);
+                        previous = next;
+                    }
+                    if (validPoints != null) AddPointIfInsideClip(previous, polygon, finalTransform, validPoints);
+                }
+            }
+            else if (curve is Polyline2d)
+            {
+                // Visit each native parameter interval so legacy polyline corners
+                // are not lost by sampling the entire curve at a fixed 72 points.
+                for (double parameter = curve.StartParam; parameter < curve.EndParam; parameter += 1.0)
+                {
+                    double end = Math.Min(parameter + 1.0, curve.EndParam);
+                    Point3d previous = curve.GetPointAtParameter(parameter).TransformBy(matrix);
+                    if (validPoints != null) AddPointIfInsideClip(previous, polygon, finalTransform, validPoints);
+                    for (int i = 1; i <= 72; i++)
+                    {
+                        Point3d next = curve.GetPointAtParameter(parameter + (end - parameter) * i / 72).TransformBy(matrix);
+                        visible |= AddClippedSegment(previous, next, polygon, finalTransform, validPoints, false);
+                        previous = next;
+                    }
+                    if (validPoints != null) AddPointIfInsideClip(previous, polygon, finalTransform, validPoints);
+                }
+            }
+            else
+            {
+                bool straight = curve is Line;
+                int steps = straight ? 1 : 72;
+                Point3d previous = curve.StartPoint.TransformBy(matrix);
+                if (validPoints != null) AddPointIfInsideClip(previous, polygon, finalTransform, validPoints);
+                for (int i = 1; i <= steps; i++)
+                {
+                    double parameter = curve.StartParam + (curve.EndParam - curve.StartParam) * i / steps;
+                    Point3d next = curve.GetPointAtParameter(parameter).TransformBy(matrix);
+                    visible |= AddClippedSegment(previous, next, polygon, finalTransform, validPoints, straight);
+                    previous = next;
+                }
+                if (validPoints != null)
+                {
+                    AddPointIfInsideClip(previous, polygon, finalTransform, validPoints);
+                    AddConicExtrema(curve, matrix, polygon, finalTransform, validPoints);
+                }
+            }
+            return visible;
+        }
+
+        private static bool AddClippedSegment(
+            Point3d start, Point3d end, CalloutClipPolygon polygon, Matrix3d finalTransform,
+            List<Point3d> validPoints, bool includeEndpoints)
+        {
+            ClipPoint a = new ClipPoint(start.X, start.Y), b = new ClipPoint(end.X, end.Y);
+            List<double> crossings = polygon.GetBoundaryParameters(a, b);
+            bool visible = crossings.Count > 0 || polygon.Contains(a) || polygon.Contains(b);
+            if (validPoints != null)
+            {
+                foreach (double parameter in crossings)
+                    validPoints.Add((start + (end - start) * parameter).TransformBy(finalTransform));
+                if (includeEndpoints)
+                {
+                    AddPointIfInsideClip(start, polygon, finalTransform, validPoints);
+                    AddPointIfInsideClip(end, polygon, finalTransform, validPoints);
+                }
+            }
+            return visible;
+        }
+
+        private static void AddConicExtrema(
+            Curve curve, Matrix3d matrix, CalloutClipPolygon polygon, Matrix3d finalTransform, List<Point3d> validPoints)
+        {
+            Point3d center;
+            Vector3d x, y;
+            if (curve is Circle circle)
+            {
+                center = circle.Center.TransformBy(matrix);
+                x = (circle.GetPointAtParameter(0.0) - circle.Center).TransformBy(matrix);
+                y = (circle.GetPointAtParameter(Math.PI / 2.0) - circle.Center).TransformBy(matrix);
+            }
+            else if (curve is Ellipse ellipse)
+            {
+                center = ellipse.Center.TransformBy(matrix);
+                x = ellipse.MajorAxis.TransformBy(matrix);
+                y = ellipse.MinorAxis.TransformBy(matrix);
+            }
+            else return;
+
+            double angleX = Math.Atan2(y.X, x.X);
+            double angleY = Math.Atan2(y.Y, x.Y);
+            foreach (double angle in new[] { angleX, angleX + Math.PI, angleY, angleY + Math.PI })
+            {
+                double parameter = angle;
+                while (parameter < curve.StartParam) parameter += 2.0 * Math.PI;
+                if (parameter > curve.EndParam + 1.0e-8) continue;
+                Point3d point = center + x * Math.Cos(parameter) + y * Math.Sin(parameter);
+                AddPointIfInsideClip(point, polygon, finalTransform, validPoints);
             }
         }
 
@@ -968,8 +979,8 @@ namespace Callout.Logic
 
             try
             {
-                Extents3d clipBox = boundaryCurve.GeometricExtents;
-                ExtractGeometryRecursive(sourceBlock.BlockTableRecord, sourceBlock.BlockTransform, clipBox, finalTransform, validPoints, validArcs, validCircles, transaction, new HashSet<ObjectId>());
+                CalloutClipPolygon clipPolygon = CreateClipPolygon(CreateBoundarySamplePoints(boundaryCurve, Matrix3d.Identity));
+                ExtractGeometryRecursive(sourceBlock.BlockTableRecord, sourceBlock.BlockTransform, clipPolygon, finalTransform, validPoints, validArcs, validCircles, transaction, new HashSet<ObjectId>());
 
                 // Debug output
                 var ed = Application.DocumentManager.MdiActiveDocument?.Editor;
@@ -1204,7 +1215,7 @@ namespace Callout.Logic
         /// Tách các arc segment từ Polyline có bulge (cung tròn trong polyline).
         /// Bulge != 0 nghĩa là đoạn đó là cung tròn, cần tạo Arc để dim bán kính.
         /// </summary>
-        private static void ExtractArcsFromPolyline(Polyline polyline, Matrix3d matrix, Extents3d clipBox, Matrix3d finalTransform, List<Arc> validArcs)
+        private static void ExtractArcsFromPolyline(Polyline polyline, Matrix3d matrix, CalloutClipPolygon clipPolygon, Matrix3d finalTransform, List<Arc> validArcs)
         {
             int vertexCount = polyline.NumberOfVertices;
             int segCount = polyline.Closed ? vertexCount : vertexCount - 1;
@@ -1252,11 +1263,11 @@ namespace Callout.Logic
                         arc = new Arc(center, radius, startAngle, endAngle);
                         arc.SetDatabaseDefaults();
 
-                        // Kiểm tra midpoint có nằm trong clip box
-                        Point3d midWcs = arc.GetPointAtParameter(arc.StartParam + (arc.EndParam - arc.StartParam) / 2.0).TransformBy(matrix);
-                        if (IsInsideClip(midWcs, clipBox))
+                        Matrix3d ocsToWorld = Matrix3d.PlaneToWorld(polyline.Normal) *
+                            Matrix3d.Displacement(new Vector3d(0, 0, polyline.Elevation));
+                        if (AddCurveClipPoints(arc, matrix * ocsToWorld, clipPolygon, finalTransform, null))
                         {
-                            arc.TransformBy(finalTransform * matrix);
+                            arc.TransformBy(finalTransform * matrix * ocsToWorld);
                             validArcs.Add(arc);
                             arc = null;
                         }
@@ -1340,15 +1351,14 @@ namespace Callout.Logic
             return result;
         }
 
-        private static bool IsInsideClip(Point3d pointWcs, Extents3d clipBox)
+        private static bool IsInsideClip(Point3d pointWcs, CalloutClipPolygon clipPolygon)
         {
-            return pointWcs.X >= clipBox.MinPoint.X && pointWcs.X <= clipBox.MaxPoint.X &&
-                   pointWcs.Y >= clipBox.MinPoint.Y && pointWcs.Y <= clipBox.MaxPoint.Y;
+            return clipPolygon.Contains(new ClipPoint(pointWcs.X, pointWcs.Y));
         }
 
-        private static void AddPointIfInsideClip(Point3d pointWcs, Extents3d clipBox, Matrix3d finalTransform, List<Point3d> validPoints)
+        private static void AddPointIfInsideClip(Point3d pointWcs, CalloutClipPolygon clipPolygon, Matrix3d finalTransform, List<Point3d> validPoints)
         {
-            if (IsInsideClip(pointWcs, clipBox))
+            if (IsInsideClip(pointWcs, clipPolygon))
             {
                 validPoints.Add(pointWcs.TransformBy(finalTransform));
             }
@@ -1373,20 +1383,25 @@ namespace Callout.Logic
                 true) as DBDictionary;
             if (filterDictionary == null || !filterDictionary.Contains(SpatialFilterName)) return false;
 
+            ObjectId spatialFilterId = filterDictionary.GetAt(SpatialFilterName);
+            if (!(transaction.GetObject(spatialFilterId, OpenMode.ForRead, false, true) is SpatialFilter)) return false;
+
             if (!extensionDictionary.TreatElementsAsHard)
             {
-                extensionDictionary.UpgradeOpen();
+                if (!extensionDictionary.IsWriteEnabled) extensionDictionary.UpgradeOpen();
                 extensionDictionary.TreatElementsAsHard = true;
                 changed = true;
             }
 
             if (!filterDictionary.TreatElementsAsHard)
             {
-                filterDictionary.UpgradeOpen();
+                if (!filterDictionary.IsWriteEnabled) filterDictionary.UpgradeOpen();
                 filterDictionary.TreatElementsAsHard = true;
                 changed = true;
             }
 
+            changed = CalloutCropStorage.EnsureReferences(transaction, extensionDictionary,
+                filterDictionary.ObjectId, spatialFilterId) || changed;
             return true;
         }
 
@@ -1444,7 +1459,9 @@ namespace Callout.Logic
             filterDictionary.TreatElementsAsHard = true;
             if (filterDictionary.Contains(SpatialFilterName))
             {
+                ObjectId previousFilterId = filterDictionary.GetAt(SpatialFilterName);
                 filterDictionary.Remove(SpatialFilterName);
+                transaction.GetObject(previousFilterId, OpenMode.ForWrite, false, true).Erase();
             }
 
             Matrix3d worldToBlockMatrix = blockReference.BlockTransform.Inverse();
@@ -1468,7 +1485,10 @@ namespace Callout.Logic
             {
                 filterDictionary.SetAt(SpatialFilterName, spatialFilter);
                 transaction.AddNewlyCreatedDBObject(spatialFilter, true);
+                ObjectId spatialFilterId = spatialFilter.ObjectId;
                 spatialFilter = null;
+                CalloutCropStorage.EnsureReferences(transaction, extensionDictionary,
+                    filterDictionary.ObjectId, spatialFilterId);
             }
             finally
             {

@@ -19,6 +19,7 @@ namespace Callout.Services
         private static bool _initialized = false;
         private static bool _isUpdating = false;
         private static readonly HashSet<Database> _pendingDatabases = new HashSet<Database>();
+        private static readonly HashSet<Database> _pendingLeaderDatabases = new HashSet<Database>();
 
         public static void Initialize()
         {
@@ -68,6 +69,7 @@ namespace Callout.Services
                 }
             }
             _pendingDatabases.Clear();
+            _pendingLeaderDatabases.Clear();
             _initialized = false;
         }
 
@@ -98,6 +100,7 @@ namespace Callout.Services
             {
                 DetachFromDocument(e.Document);
                 _pendingDatabases.Remove(e.Document.Database);
+                _pendingLeaderDatabases.Remove(e.Document.Database);
             }
             catch (Exception ex)
             {
@@ -109,12 +112,21 @@ namespace Callout.Services
         {
             doc.Database.ObjectAppended += Database_ObjectModified;
             doc.Database.ObjectModified += Database_ObjectModified;
+            doc.Database.ObjectReappended += Database_ObjectModified;
+            doc.CommandEnded += Document_CommandFinished;
+            doc.CommandCancelled += Document_CommandFinished;
+            doc.CommandFailed += Document_CommandFinished;
+            _pendingLeaderDatabases.Add(doc.Database);
         }
 
         private static void DetachFromDocument(Document doc)
         {
             doc.Database.ObjectAppended -= Database_ObjectModified;
             doc.Database.ObjectModified -= Database_ObjectModified;
+            doc.Database.ObjectReappended -= Database_ObjectModified;
+            doc.CommandEnded -= Document_CommandFinished;
+            doc.CommandCancelled -= Document_CommandFinished;
+            doc.CommandFailed -= Document_CommandFinished;
         }
 
         private static void Database_ObjectModified(object sender, ObjectEventArgs e)
@@ -122,6 +134,13 @@ namespace Callout.Services
             try
             {
                 if (_isUpdating) return;
+
+                if (e.DBObject is Polyline)
+                {
+                    Database leaderDatabase = sender as Database;
+                    if (leaderDatabase != null && !leaderDatabase.IsDisposed) _pendingLeaderDatabases.Add(leaderDatabase);
+                    return;
+                }
 
                 if (e.DBObject is BlockReference || e.DBObject is AttributeReference)
                 {
@@ -145,10 +164,13 @@ namespace Callout.Services
             try
             {
                 Document doc = Application.DocumentManager.MdiActiveDocument;
-                if (doc == null || !_pendingDatabases.Contains(doc.Database) || !doc.Editor.IsQuiescent)
+                if (doc == null || !doc.Editor.IsQuiescent)
                 {
                     return;
                 }
+
+                SynchronizePendingLeaders(doc);
+                if (!_pendingDatabases.Contains(doc.Database)) return;
 
                 if (string.IsNullOrEmpty(CalloutConfig.TitleBlockName) || string.IsNullOrEmpty(CalloutConfig.SheetNumberTag))
                 {
@@ -180,169 +202,131 @@ namespace Callout.Services
             }
         }
 
+        private static void Document_CommandFinished(object sender, CommandEventArgs e)
+        {
+            if (_isUpdating) return;
+            try
+            {
+                Document document = sender as Document;
+                if (document == null || document.Database.IsDisposed) return;
+                string command = e.GlobalCommandName;
+                if (string.Equals(command, "U", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(command, "UNDO", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(command, "REDO", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(command, "MREDO", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Dependent changes made at CommandEnded belong to the
+                    // original command's undo record. Do not start another
+                    // write transaction after U/REDO and invalidate its redo chain.
+                    _pendingLeaderDatabases.Remove(document.Database);
+                    return;
+                }
+                SynchronizePendingLeaders(document);
+            }
+            catch (Exception ex)
+            {
+                WriteError("Leader command completed", ex);
+            }
+        }
+
+        private static void SynchronizePendingLeaders(Document document)
+        {
+            if (_isUpdating || !_pendingLeaderDatabases.Contains(document.Database)) return;
+            _isUpdating = true;
+            try
+            {
+                // Command callbacks and Idle both run on AutoCAD's main thread.
+                // Never modify dependent entities in ObjectModified itself.
+                using (DocumentLock documentLock = document.LockDocument())
+                using (Transaction transaction = document.Database.TransactionManager.StartTransaction())
+                {
+                    Callout.Logic.CalloutLeaderLinks.Synchronize(document.Database, transaction);
+                    transaction.Commit();
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteError("Synchronize leader endpoints", ex);
+            }
+            finally
+            {
+                _pendingLeaderDatabases.Remove(document.Database);
+                _isUpdating = false;
+            }
+        }
+
         private static void UpdateCalloutsPositional(Document doc)
         {
-            var mappings = Callout.Logic.CalloutCoreLogic.GetCalloutMappings(doc.Database);
-            if (mappings.Count == 0) return;
-
             using (DocumentLock docLock = doc.LockDocument())
             using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
             {
-                BlockTableRecord currentSpace = tr.GetObject(doc.Database.CurrentSpaceId, OpenMode.ForRead) as BlockTableRecord;
-                if (currentSpace == null) return;
-
-                List<BlockReference> titleBlocks = new List<BlockReference>();
-                foreach (ObjectId id in currentSpace)
+                var mappings = Callout.Logic.CalloutCoreLogic.GetCalloutMappings(doc.Database, tr);
+                var titleBlocksBySpace = new Dictionary<ObjectId, List<Tuple<Extents3d, string, double?>>>();
+                foreach (var pairs in mappings.Values)
                 {
-                    if (id.IsErased) continue;
-                    BlockReference blk = tr.GetObject(id, OpenMode.ForRead) as BlockReference;
-                    if (blk != null)
+                    foreach (var pair in pairs)
                     {
-                        string bName = CalloutHelpers.GetEffectiveBlockName(tr, blk);
-                        if (bName.Equals(CalloutConfig.TitleBlockName, StringComparison.OrdinalIgnoreCase))
+                        BlockReference titleBubble = (BlockReference)tr.GetObject(pair.TitleBubbleId, OpenMode.ForRead);
+                        BlockReference sourceBubble = pair.SourceBubbleId.IsNull ? null :
+                            tr.GetObject(pair.SourceBubbleId, OpenMode.ForRead) as BlockReference;
+                        var target = FindTitleBlock(tr, titleBubble, titleBlocksBySpace);
+                        if (target != null)
                         {
-                            titleBlocks.Add(blk);
+                            UpdateSheet(tr, titleBubble, target.Item2);
+                            if (sourceBubble != null) UpdateSheet(tr, sourceBubble, target.Item2);
+                            UpdateScale(titleBubble, target.Item3);
+                        }
+
+                        if (sourceBubble != null)
+                        {
+                            var source = FindTitleBlock(tr, sourceBubble, titleBlocksBySpace);
+                            if (source != null) UpdateScale(sourceBubble, source.Item3);
                         }
                     }
                 }
-
-                var tbData = new List<Tuple<Extents3d, string, double?>>();
-                foreach (var tb in titleBlocks)
-                {
-                    try
-                    {
-                        Extents3d ext = tb.GeometricExtents;
-                        string sheetNo = CalloutHelpers.GetAttributeValue(tr, tb, CalloutConfig.SheetNumberTag);
-                        
-                        double? scaleVal = null;
-                        if (!string.IsNullOrEmpty(CalloutConfig.ScaleTag))
-                        {
-                            string scaleStr = CalloutHelpers.GetAttributeValue(tr, tb, CalloutConfig.ScaleTag);
-                            if (!string.IsNullOrEmpty(scaleStr))
-                            {
-                                string numPart = scaleStr;
-                                int idx = scaleStr.IndexOf('/');
-                                if (idx == -1) idx = scaleStr.IndexOf(':');
-                                if (idx != -1) numPart = scaleStr.Substring(idx + 1);
-
-                                if (double.TryParse(numPart, out double val))
-                                {
-                                    scaleVal = val;
-                                }
-                            }
-                        }
-
-                        if (sheetNo != null || scaleVal.HasValue) tbData.Add(Tuple.Create(ext, sheetNo, scaleVal));
-                    }
-                    catch (Exception ex)
-                    {
-                        Application.DocumentManager.MdiActiveDocument?.Editor
-                            .WriteMessage($"\n[Callout Watcher] Không đọc được TitleBlock: {ex.Message}");
-                    }
-                }
-
-                foreach (var kvp in mappings)
-                {
-                    foreach (var pair in kvp.Value)
-                    {
-                        if (pair.TitleBubbleId.IsErased || pair.TitleBubbleId.IsNull) continue;
-
-                        BlockReference titleBubble = tr.GetObject(pair.TitleBubbleId, OpenMode.ForRead) as BlockReference;
-                        if (titleBubble == null || titleBubble.IsErased) continue;
-
-                        string targetSheet = "";
-                        double? targetScale = null;
-                        bool matchedTitleBlock = false;
-                        try
-                        {
-                            Point3d pos = titleBubble.Position;
-                            foreach (var tb in tbData)
-                            {
-                                if (pos.X >= tb.Item1.MinPoint.X && pos.X <= tb.Item1.MaxPoint.X &&
-                                    pos.Y >= tb.Item1.MinPoint.Y && pos.Y <= tb.Item1.MaxPoint.Y)
-                                {
-                                    matchedTitleBlock = true;
-                                    targetSheet = tb.Item2;
-                                    targetScale = tb.Item3;
-                                    break;
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Application.DocumentManager.MdiActiveDocument?.Editor
-                                .WriteMessage($"\n[Callout Watcher] Lỗi xác định Sheet/Scale: {ex.Message}");
-                        }
-
-                        // Không xóa dữ liệu hiện có khi title block không nằm trong current space.
-                        if (!matchedTitleBlock) continue;
-
-                        string currentSheet = CalloutHelpers.GetAttributeValue(tr, titleBubble, "SHEETNUMBER");
-                        if (currentSheet != targetSheet)
-                        {
-                            titleBubble.UpgradeOpen();
-                            CalloutHelpers.SetAttributeValue(tr, titleBubble, "SHEETNUMBER", targetSheet ?? "");
-                        }
-
-                        if (targetScale.HasValue && Math.Abs(titleBubble.ScaleFactors.X - targetScale.Value) > 0.001)
-                        {
-                            if (!titleBubble.IsWriteEnabled) titleBubble.UpgradeOpen();
-                            titleBubble.ScaleFactors = PreserveScaleSigns(titleBubble.ScaleFactors, targetScale.Value);
-                        }
-
-                        if (!pair.SourceBubbleId.IsErased && !pair.SourceBubbleId.IsNull)
-                        {
-                            BlockReference sourceBubble = tr.GetObject(pair.SourceBubbleId, OpenMode.ForRead) as BlockReference;
-                            if (sourceBubble != null && !sourceBubble.IsErased)
-                            {
-                                string sourceCurrentSheet = CalloutHelpers.GetAttributeValue(tr, sourceBubble, "SHEETNUMBER");
-                                if (sourceCurrentSheet != targetSheet)
-                                {
-                                    sourceBubble.UpgradeOpen();
-                                    CalloutHelpers.SetAttributeValue(tr, sourceBubble, "SHEETNUMBER", targetSheet ?? "");
-                                }
-
-                                double? sourceTargetScale = null;
-                                bool matchedSourceTitleBlock = false;
-                                try
-                                {
-                                    Point3d sourcePos = sourceBubble.Position;
-                                    foreach (var tb in tbData)
-                                    {
-                                        if (sourcePos.X >= tb.Item1.MinPoint.X && sourcePos.X <= tb.Item1.MaxPoint.X &&
-                                            sourcePos.Y >= tb.Item1.MinPoint.Y && sourcePos.Y <= tb.Item1.MaxPoint.Y)
-                                        {
-                                            matchedSourceTitleBlock = true;
-                                            sourceTargetScale = tb.Item3;
-                                            break;
-                                        }
-                                    }
-                                }
-                                catch (Exception ex)
-                                {
-                                    WriteError("Source scale", ex);
-                                }
-
-                                if (matchedSourceTitleBlock && sourceTargetScale.HasValue && Math.Abs(sourceBubble.ScaleFactors.X - sourceTargetScale.Value) > 0.001)
-                                {
-                                    if (!sourceBubble.IsWriteEnabled) sourceBubble.UpgradeOpen();
-                                    sourceBubble.ScaleFactors = PreserveScaleSigns(sourceBubble.ScaleFactors, sourceTargetScale.Value);
-                                }
-                            }
-                        }
-                    }
-                }
-
                 tr.Commit();
             }
         }
 
-        private static Scale3d PreserveScaleSigns(Scale3d currentScale, double absoluteScale)
+        private static Tuple<Extents3d, string, double?> FindTitleBlock(
+            Transaction transaction,
+            BlockReference bubble,
+            Dictionary<ObjectId, List<Tuple<Extents3d, string, double?>>> titleBlocksBySpace)
         {
-            double xSign = currentScale.X < 0.0 ? -1.0 : 1.0;
-            double ySign = currentScale.Y < 0.0 ? -1.0 : 1.0;
-            double zSign = currentScale.Z < 0.0 ? -1.0 : 1.0;
-            return new Scale3d(absoluteScale * xSign, absoluteScale * ySign, absoluteScale * zSign);
+            // Each space has an independent coordinate system. Never compare a
+            // ModelSpace bubble with a title block in the active paper layout.
+            if (!titleBlocksBySpace.TryGetValue(bubble.OwnerId, out var titleBlocks))
+            {
+                titleBlocks = CalloutHelpers.ReadTitleBlocks(transaction, bubble.OwnerId);
+                titleBlocksBySpace.Add(bubble.OwnerId, titleBlocks);
+            }
+
+            Point3d position = bubble.Position;
+            foreach (var titleBlock in titleBlocks)
+            {
+                Extents3d extents = titleBlock.Item1;
+                if (position.X >= extents.MinPoint.X && position.X <= extents.MaxPoint.X &&
+                    position.Y >= extents.MinPoint.Y && position.Y <= extents.MaxPoint.Y) return titleBlock;
+            }
+            return null;
+        }
+
+        private static void UpdateSheet(Transaction transaction, BlockReference bubble, string sheet)
+        {
+            if (sheet == null || CalloutHelpers.GetAttributeValue(transaction, bubble, "SHEETNUMBER") == sheet) return;
+            if (!bubble.IsWriteEnabled) bubble.UpgradeOpen();
+            CalloutHelpers.SetAttributeValue(transaction, bubble, "SHEETNUMBER", sheet);
+        }
+
+        private static void UpdateScale(BlockReference bubble, double? targetScale)
+        {
+            if (!targetScale.HasValue) return;
+            double currentScale = Math.Abs(bubble.ScaleFactors.X);
+            if (currentScale <= 0.0 || Math.Abs(currentScale - targetScale.Value) <= 0.001) return;
+            if (!bubble.IsWriteEnabled) bubble.UpgradeOpen();
+            // TransformBy also transforms the attached attributes, preserving
+            // mirrored signs, insertion point and existing proportions.
+            bubble.TransformBy(Matrix3d.Scaling(targetScale.Value / currentScale, bubble.Position));
         }
 
         private static void WriteError(string operation, Exception exception)

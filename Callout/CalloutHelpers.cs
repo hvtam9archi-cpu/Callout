@@ -111,7 +111,33 @@ namespace Callout.Services
                    position.Y >= extents.MinPoint.Y && position.Y <= extents.MaxPoint.Y;
         }
 
-        private static bool TryParseScale(string scaleText, out double scale)
+        internal static List<Tuple<Extents3d, string, double?>> ReadTitleBlocks(Transaction transaction, ObjectId spaceId)
+        {
+            var data = new List<Tuple<Extents3d, string, double?>>();
+            if (string.IsNullOrEmpty(CalloutConfig.TitleBlockName)) return data;
+            BlockTableRecord space = (BlockTableRecord)transaction.GetObject(spaceId, OpenMode.ForRead);
+            foreach (ObjectId id in space)
+            {
+                if (id.IsErased) continue;
+                BlockReference block = transaction.GetObject(id, OpenMode.ForRead) as BlockReference;
+                if (block == null || !GetEffectiveBlockName(transaction, block)
+                    .Equals(CalloutConfig.TitleBlockName, StringComparison.OrdinalIgnoreCase)) continue;
+                try
+                {
+                    string sheet = GetAttributeValue(transaction, block, CalloutConfig.SheetNumberTag);
+                    string scaleText = GetAttributeValue(transaction, block, CalloutConfig.ScaleTag);
+                    double? scale = TryParseScale(scaleText, out double value) ? value : (double?)null;
+                    data.Add(Tuple.Create(block.GeometricExtents, sheet, scale));
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[Callout] Read title block {id}: {ex}");
+                }
+            }
+            return data;
+        }
+
+        internal static bool TryParseScale(string scaleText, out double scale)
         {
             scale = 0.0;
             if (string.IsNullOrWhiteSpace(scaleText)) return false;
@@ -121,7 +147,7 @@ namespace Callout.Services
             if (separatorIndex == -1) separatorIndex = numericPart.IndexOf(':');
             if (separatorIndex != -1) numericPart = numericPart.Substring(separatorIndex + 1).Trim();
 
-            return double.TryParse(numericPart, out scale) && scale > 0.0;
+            return double.TryParse(numericPart, out scale) && scale > 0.0 && !double.IsInfinity(scale) && !double.IsNaN(scale);
         }
 
         /// <summary>
@@ -297,17 +323,25 @@ namespace Callout.Services
         /// <summary>
         /// Tạo filled dot (donut) tại vị trí center.
         /// </summary>
-        public static Entity CreateLeaderDot(Point3d center, double diameter)
+        public static Entity CreateLeaderDot(Point3d center, double diameter, Database database = null)
         {
             Polyline dot = new Polyline();
-            dot.SetDatabaseDefaults();
-            double radius = diameter / 2.0;
-
-            dot.AddVertexAt(0, new Point2d(center.X - radius / 2.0, center.Y), 1.0, diameter, diameter);
-            dot.AddVertexAt(1, new Point2d(center.X + radius / 2.0, center.Y), 1.0, diameter, diameter);
-            dot.Closed = true;
-
-            return dot;
+            try
+            {
+                if (database == null) dot.SetDatabaseDefaults();
+                else dot.SetDatabaseDefaults(database);
+                double radius = diameter / 2.0;
+                dot.Elevation = center.Z;
+                dot.AddVertexAt(0, new Point2d(center.X - radius / 2.0, center.Y), 1.0, radius, radius);
+                dot.AddVertexAt(1, new Point2d(center.X + radius / 2.0, center.Y), 1.0, radius, radius);
+                dot.Closed = true;
+                return dot;
+            }
+            catch (Exception)
+            {
+                dot.Dispose();
+                throw;
+            }
         }
 
         /// <summary>

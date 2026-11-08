@@ -183,44 +183,18 @@ namespace Callout.UI
         {
             _displayedDatabase = doc.Database;
 
-            var mappings = Callout.Logic.CalloutCoreLogic.GetCalloutMappings(doc.Database);
-            if (mappings.Count == 0)
-            {
-                MainTreeView.ItemsSource = new List<CalloutNodeData> { new CalloutNodeData { Title = "Chưa có dữ liệu trích xuất nào trong bản vẽ này." } };
-                return;
-            }
-
             var rootNodes = new List<CalloutNodeData>();
 
             using (DocumentLock docLock = doc.LockDocument())
             using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
             {
-                var tbData = new List<Tuple<Extents3d, string>>();
-                if (!string.IsNullOrEmpty(Callout.Services.CalloutConfig.TitleBlockName))
+                var mappings = Callout.Logic.CalloutCoreLogic.GetCalloutMappings(doc.Database, tr);
+                if (mappings.Count == 0)
                 {
-                    BlockTableRecord currentSpace = tr.GetObject(doc.Database.CurrentSpaceId, OpenMode.ForRead) as BlockTableRecord;
-                    foreach (ObjectId id in currentSpace)
-                    {
-                        if (id.IsErased) continue;
-                        BlockReference blk = tr.GetObject(id, OpenMode.ForRead) as BlockReference;
-                        if (blk != null)
-                        {
-                            string bName = CalloutHelpers.GetEffectiveBlockName(tr, blk);
-                            if (bName.Equals(CalloutConfig.TitleBlockName, StringComparison.OrdinalIgnoreCase))
-                            {
-                                try
-                                {
-                                    string sheetNo = CalloutHelpers.GetAttributeValue(tr, blk, CalloutConfig.SheetNumberTag);
-                                    if (sheetNo != null) tbData.Add(Tuple.Create(blk.GeometricExtents, sheetNo));
-                                }
-                                catch (Exception ex)
-                                {
-                                    WriteUiError("TitleBlock", ex);
-                                }
-                            }
-                        }
-                    }
+                    MainTreeView.ItemsSource = new List<CalloutNodeData> { new CalloutNodeData { Title = "Chưa có dữ liệu trích xuất nào trong bản vẽ này." } };
+                    return;
                 }
+                var titleBlocksBySpace = new Dictionary<ObjectId, List<Tuple<Extents3d, string, double?>>>();
 
                 int groupCounter = 0;
                 foreach (var kvp in mappings)
@@ -236,6 +210,11 @@ namespace Callout.UI
                     
                     string sourceSheet = "Trống";
                     try {
+                        if (!titleBlocksBySpace.TryGetValue(sourceBlk.OwnerId, out var tbData))
+                        {
+                            tbData = CalloutHelpers.ReadTitleBlocks(tr, sourceBlk.OwnerId);
+                            titleBlocksBySpace.Add(sourceBlk.OwnerId, tbData);
+                        }
                         Point3d pos = sourceBlk.Position;
                         foreach (var tb in tbData)
                         {

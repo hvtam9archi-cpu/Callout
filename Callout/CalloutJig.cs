@@ -19,8 +19,8 @@ namespace Callout.Jigs
         private Curve _previewBoundary;
         private List<AttributeReference> _previewAttributes;
         private readonly Point2dCollection _clipBoundaryPoints;
+        private readonly List<Point3d> _leaderBoundaryPoints = new List<Point3d>();
         private readonly Point3d _basePoint;
-        private readonly Extents3d _originalExtents;
         private readonly bool _isFarCallout;
         private bool _disposed;
 
@@ -30,7 +30,6 @@ namespace Callout.Jigs
             List<AttributeReference> previewAttributes,
             Point2dCollection clipBoundaryPoints,
             Point3d basePoint,
-            Extents3d originalExtents,
             bool isFarCallout = false)
         {
             _previewBlock = previewBlock ?? throw new ArgumentNullException(nameof(previewBlock));
@@ -43,7 +42,8 @@ namespace Callout.Jigs
             }
 
             _basePoint = basePoint;
-            _originalExtents = originalExtents;
+            foreach (Point2d point in _clipBoundaryPoints)
+                _leaderBoundaryPoints.Add(new Point3d(point.X, point.Y, previewBoundary.StartPoint.Z));
             CurrentPosition = basePoint;
             _isFarCallout = isFarCallout;
             MathTransform = Matrix3d.Identity;
@@ -171,7 +171,7 @@ namespace Callout.Jigs
 
                 if (!_isFarCallout)
                 {
-                    var leaderEntities = CalloutGeometryService.CreateSmartLeader(_originalExtents, MathTransform, visualDotSize);
+                    var leaderEntities = CalloutGeometryService.CreateSmartLeader(_leaderBoundaryPoints, MathTransform, visualDotSize);
                     try
                     {
                         foreach (var ent in leaderEntities)
@@ -215,7 +215,9 @@ namespace Callout.Jigs
                 clipBoundary.NormalVector = Vector3d.ZAxis;
                 clipBoundary.Point = Point3d.Origin;
                 clipBoundary.TransformToClipSpace = Matrix3d.Identity;
-                clipBoundary.TransformInverseBlockRefXForm = _previewBlock.BlockTransform.Inverse();
+                // Points and preview entities share source WCS. Undo this jig's outer
+                // model transform; the nested BlockReference applies its own transform.
+                clipBoundary.TransformInverseBlockRefXForm = MathTransform.Inverse();
                 clipBoundary.ClippingFront = false;
                 clipBoundary.ClippingBack = false;
                 clipBoundary.FrontClipZ = 0.0;
